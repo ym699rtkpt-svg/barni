@@ -1,4 +1,13 @@
-class MemoryService:
+class MemoryManager:
 
-    def update(self, event):
-        print("Updating business memory")
+    def handle(self, event):
+        print("[MemoryManager] Updated")
+
+    def store_fact(self):
+        pass
+
+    def update_memory(self):
+        pass
+
+    def search_memory(self):
+        pass
