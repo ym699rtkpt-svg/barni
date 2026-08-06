@@ -224,7 +224,10 @@ def approve_to_database(record: dict, updated_document: dict) -> tuple[bool, str
 
     event = KnowledgeEvent(
         event_type="invoice_approved",
-        payload=updated_document,
+        payload={
+            **updated_document,
+            "invoice_id": invoice_id,
+        },
         created_at=datetime.now(),
     )
 
