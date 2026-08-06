@@ -10,8 +10,6 @@ import pandas as pd
 import streamlit as st
 from landing_page import render_landing_page
 
-from ui.sidebar import render_sidebar
-
 from batch_dashboard import render_batch_dashboard
 from ai_dashboard import render_ai_dashboard
 from business_dashboard import render_business_dashboard
@@ -309,6 +307,7 @@ PAGE_FEED = "קליטה יומית"
 PAGE_SEARCH = "חיפוש חשבוניות"
 PAGE_KNOWLEDGE = "ספקים"
 PAGE_INSIGHTS = "דשבורד"
+PAGE_CHAT = "Ask Barni"
 
 if "current_page" not in st.session_state:
     st.session_state.current_page = PAGE_HOME
@@ -370,6 +369,11 @@ navigation_button(
     PAGE_INSIGHTS,
     key="nav_insights",
 )
+navigation_button(
+    "💬  Ask Barni",
+    PAGE_CHAT,
+    key="nav_chat",
+)
 
 st.sidebar.markdown(
     '<div class="barni-divider"></div>',
@@ -422,13 +426,6 @@ if page == "Barni":
         "ככל שייכנס יותר מידע, התובנות יהפכו מדויקות ושימושיות יותר."
     )
 
-
-    st.markdown("---")
-    st.markdown("## 💬 Ask Barni")
-    st.caption(
-        "שאל על ספקים, חשבוניות, הוצאות והמידע העסקי שכבר למדתי."
-    )
-    render_ai_accountant()
 
 if page == "העלאת חשבונית":
     uploaded = st.file_uploader(
@@ -643,3 +640,5 @@ if page == "ספקים":
     render_suppliers_page()
 
 
+if page == "Ask Barni":
+    render_ai_accountant()

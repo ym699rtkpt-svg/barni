@@ -8,9 +8,6 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-from landing_page import render_landing_page
-
-from ui.sidebar import render_sidebar
 
 from batch_dashboard import render_batch_dashboard
 from ai_dashboard import render_ai_dashboard
@@ -205,7 +202,7 @@ def load_invoices():
     """, get_db())
 
 
-st.set_page_config(page_title="Barni", page_icon="🥚", layout="wide")
+st.set_page_config(page_title="חשבוניות למסעדה", layout="wide")
 
 st.markdown("""
 <style>
@@ -218,219 +215,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-render_landing_page()
+st.title("חשבוניות למסעדה")
+st.caption("מעלים חשבונית, רואים אותה במלואה, בודקים את הנתונים ושומרים.")
 
-st.title("Barni")
-st.caption("מאכילים את Barni במידע עסקי ומקבלים זיכרון, סדר ותובנות.")
+upload_tab, daily_intake_tab, archive_tab, smart_archive_tab, batch_tab, ai_tab, business_tab, suppliers_tab, ai_accountant_tab, migration_tab, month_tab, diagnostics_tab = st.tabs(["העלאת חשבונית", "קליטה יומית", "ארכיון", "חיפוש חשבוניות", "בדיקת מאגר", "חילוץ AI", "דשבורד", "ספקים", "AI Accountant", "הגירת מאגר", "סגירת חודש", "בריאות מסד"])
 
-st.markdown(
-    """
-    <style>
-    [data-testid="stSidebar"] {
-        background: #f4f0e5;
-        border-right: 1px solid rgba(35, 60, 46, 0.12);
-    }
-
-    [data-testid="stSidebar"] > div:first-child {
-        padding-top: 1.25rem;
-    }
-
-    [data-testid="stSidebar"] .stButton > button {
-        width: 100%;
-        justify-content: flex-start;
-        border: 0;
-        border-radius: 12px;
-        padding: 0.65rem 0.8rem;
-        background: transparent;
-        color: #24362b;
-        font-weight: 500;
-        text-align: left;
-        box-shadow: none;
-        transition:
-            background 160ms ease,
-            transform 160ms ease;
-    }
-
-    [data-testid="stSidebar"] .stButton > button:hover {
-        background: rgba(54, 94, 68, 0.10);
-        transform: translateX(2px);
-        color: #183b28;
-    }
-
-    [data-testid="stSidebar"] .stButton > button[kind="primary"] {
-        background: #dce8d8;
-        color: #173d28;
-        font-weight: 700;
-    }
-
-    .barni-sidebar-header {
-        text-align: center;
-        padding: 0.4rem 0 1.2rem;
-    }
-
-    .barni-sidebar-egg {
-        font-size: 2.4rem;
-        line-height: 1;
-        margin-bottom: 0.45rem;
-    }
-
-    .barni-sidebar-name {
-        color: #173d28;
-        font-size: 1.55rem;
-        font-weight: 800;
-        letter-spacing: 0.02em;
-    }
-
-    .barni-sidebar-subtitle {
-        color: #738078;
-        font-size: 0.78rem;
-        margin-top: 0.15rem;
-    }
-
-    .barni-divider {
-        height: 1px;
-        margin: 0.45rem 0 0.8rem;
-        background: rgba(35, 60, 46, 0.12);
-    }
-
-    .barni-version {
-        color: #8a948d;
-        font-size: 0.7rem;
-        text-align: center;
-        padding-top: 0.8rem;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-PAGE_HOME = "Barni"
-PAGE_FEED = "קליטה יומית"
-PAGE_SEARCH = "חיפוש חשבוניות"
-PAGE_KNOWLEDGE = "ספקים"
-PAGE_INSIGHTS = "דשבורד"
-
-if "current_page" not in st.session_state:
-    st.session_state.current_page = PAGE_HOME
-
-st.sidebar.markdown(
-    """
-    <div class="barni-sidebar-header">
-        <div class="barni-sidebar-egg">🥚</div>
-        <div class="barni-sidebar-name">Barni</div>
-        <div class="barni-sidebar-subtitle">
-            Your Business Memory
-        </div>
-    </div>
-    <div class="barni-divider"></div>
-    """,
-    unsafe_allow_html=True,
-)
-
-def navigation_button(
-    label: str,
-    target: str,
-    *,
-    key: str,
-) -> None:
-    active = st.session_state.current_page == target
-
-    if st.sidebar.button(
-        label,
-        key=key,
-        type="primary" if active else "secondary",
-        width="stretch",
-    ):
-        st.session_state.current_page = target
-        st.rerun()
-
-
-navigation_button(
-    "🏠  Home",
-    PAGE_HOME,
-    key="nav_home",
-)
-navigation_button(
-    "📄  Feed Barni",
-    PAGE_FEED,
-    key="nav_feed",
-)
-navigation_button(
-    "🔍  Search Invoices",
-    PAGE_SEARCH,
-    key="nav_search",
-)
-navigation_button(
-    "🧠  Knowledge",
-    PAGE_KNOWLEDGE,
-    key="nav_knowledge",
-)
-navigation_button(
-    "📈  Insights",
-    PAGE_INSIGHTS,
-    key="nav_insights",
-)
-
-st.sidebar.markdown(
-    '<div class="barni-divider"></div>',
-    unsafe_allow_html=True,
-)
-
-with st.sidebar.expander("⚙  Developer"):
-    developer_pages = {
-        "בדיקת מאגר": "בדיקת מאגר",
-        "חילוץ AI": "חילוץ AI",
-        "הגירת מאגר": "הגירת מאגר",
-        "סגירת חודש": "סגירת חודש",
-        "בריאות מסד": "בריאות מסד",
-        "העלאה ישנה": "העלאת חשבונית",
-        "ארכיון ישן": "ארכיון",
-    }
-
-    for label, target in developer_pages.items():
-        if st.button(
-            label,
-            key=f"developer_{target}",
-            width="stretch",
-        ):
-            st.session_state.current_page = target
-            st.rerun()
-
-st.sidebar.markdown(
-    '<div class="barni-version">Barni Alpha · 0.3</div>',
-    unsafe_allow_html=True,
-)
-
-page = st.session_state.current_page
-
-if page == "Barni":
-    st.subheader("🥚 Barni")
-    st.caption("אני לומד את העסק מכל מסמך שנכנס.")
-
-    col1, col2 = st.columns([1, 2])
-
-    with col1:
-        st.markdown("### Feed Barni")
-        st.write("העלה חשבוניות כדי להרחיב את הזיכרון העסקי.")
-
-    with col2:
-        st.markdown("### מה אני כבר מכיר")
-        st.write("ספקים, חשבוניות, מוצרים, מחירים ומגמות.")
-
-    st.info(
-        "Barni עדיין בתחילת ההתפתחות. "
-        "ככל שייכנס יותר מידע, התובנות יהפכו מדויקות ושימושיות יותר."
-    )
-
-
-    st.markdown("---")
-    st.markdown("## 💬 Ask Barni")
-    st.caption(
-        "שאל על ספקים, חשבוניות, הוצאות והמידע העסקי שכבר למדתי."
-    )
-    render_ai_accountant()
-
-if page == "העלאת חשבונית":
+with upload_tab:
     uploaded = st.file_uploader(
         "בחר תמונה או PDF",
         type=["pdf", "png", "jpg", "jpeg", "tif", "tiff", "webp"]
@@ -603,43 +393,49 @@ if page == "העלאת חשבונית":
                 )
                 st.success("החשבונית ושורות המוצרים נשמרו בארכיון.")
 
-if page == "ארכיון":
-    render_database_archive()
+with archive_tab:
+    invoices = load_invoices()
+    if invoices.empty:
+        st.info("עדיין לא נשמרו חשבוניות.")
+    else:
+        st.dataframe(invoices, width="stretch", hide_index=True)
 
 
-if page == "בדיקת מאגר":
+with batch_tab:
     render_batch_dashboard()
 
 
-if page == "חילוץ AI":
+with ai_tab:
     render_ai_dashboard()
 
 
-if page == "דשבורד":
+with business_tab:
     render_enhanced_dashboard()
 
 
-if page == "חיפוש חשבוניות":
+with smart_archive_tab:
     render_database_archive()
 
 
-if page == "קליטה יומית":
+with daily_intake_tab:
     render_daily_intake()
 
 
-if page == "הגירת מאגר":
+with migration_tab:
     render_migration_dashboard()
 
 
-if page == "סגירת חודש":
+with month_tab:
     render_month_closing()
 
 
-if page == "בריאות מסד":
+with diagnostics_tab:
     render_database_diagnostics()
 
 
-if page == "ספקים":
+with suppliers_tab:
     render_suppliers_page()
 
 
+with ai_accountant_tab:
+    render_ai_accountant()

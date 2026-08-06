@@ -10,8 +10,6 @@ import pandas as pd
 import streamlit as st
 from landing_page import render_landing_page
 
-from ui.sidebar import render_sidebar
-
 from batch_dashboard import render_batch_dashboard
 from ai_dashboard import render_ai_dashboard
 from business_dashboard import render_business_dashboard
@@ -223,185 +221,57 @@ render_landing_page()
 st.title("Barni")
 st.caption("מאכילים את Barni במידע עסקי ומקבלים זיכרון, סדר ותובנות.")
 
-st.markdown(
-    """
-    <style>
-    [data-testid="stSidebar"] {
-        background: #f4f0e5;
-        border-right: 1px solid rgba(35, 60, 46, 0.12);
-    }
+st.sidebar.markdown("## 🥚 Barni")
+st.sidebar.caption("הזיכרון העסקי שלך")
 
-    [data-testid="stSidebar"] > div:first-child {
-        padding-top: 1.25rem;
-    }
-
-    [data-testid="stSidebar"] .stButton > button {
-        width: 100%;
-        justify-content: flex-start;
-        border: 0;
-        border-radius: 12px;
-        padding: 0.65rem 0.8rem;
-        background: transparent;
-        color: #24362b;
-        font-weight: 500;
-        text-align: left;
-        box-shadow: none;
-        transition:
-            background 160ms ease,
-            transform 160ms ease;
-    }
-
-    [data-testid="stSidebar"] .stButton > button:hover {
-        background: rgba(54, 94, 68, 0.10);
-        transform: translateX(2px);
-        color: #183b28;
-    }
-
-    [data-testid="stSidebar"] .stButton > button[kind="primary"] {
-        background: #dce8d8;
-        color: #173d28;
-        font-weight: 700;
-    }
-
-    .barni-sidebar-header {
-        text-align: center;
-        padding: 0.4rem 0 1.2rem;
-    }
-
-    .barni-sidebar-egg {
-        font-size: 2.4rem;
-        line-height: 1;
-        margin-bottom: 0.45rem;
-    }
-
-    .barni-sidebar-name {
-        color: #173d28;
-        font-size: 1.55rem;
-        font-weight: 800;
-        letter-spacing: 0.02em;
-    }
-
-    .barni-sidebar-subtitle {
-        color: #738078;
-        font-size: 0.78rem;
-        margin-top: 0.15rem;
-    }
-
-    .barni-divider {
-        height: 1px;
-        margin: 0.45rem 0 0.8rem;
-        background: rgba(35, 60, 46, 0.12);
-    }
-
-    .barni-version {
-        color: #8a948d;
-        font-size: 0.7rem;
-        text-align: center;
-        padding-top: 0.8rem;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
+section = st.sidebar.radio(
+    "אזור",
+    [
+        "🥚 Barni",
+        "📄 חשבוניות",
+        "📊 העסק",
+        "💬 Ask Barni",
+        "⚙️ מערכת",
+    ],
 )
 
-PAGE_HOME = "Barni"
-PAGE_FEED = "קליטה יומית"
-PAGE_SEARCH = "חיפוש חשבוניות"
-PAGE_KNOWLEDGE = "ספקים"
-PAGE_INSIGHTS = "דשבורד"
+if section == "🥚 Barni":
+    page = "Barni"
 
-if "current_page" not in st.session_state:
-    st.session_state.current_page = PAGE_HOME
+elif section == "📄 חשבוניות":
+    page = st.sidebar.radio(
+        "חשבוניות",
+        [
+            "קליטה יומית",
+            "העלאת חשבונית",
+            "ארכיון",
+            "חיפוש חשבוניות",
+        ],
+    )
 
-st.sidebar.markdown(
-    """
-    <div class="barni-sidebar-header">
-        <div class="barni-sidebar-egg">🥚</div>
-        <div class="barni-sidebar-name">Barni</div>
-        <div class="barni-sidebar-subtitle">
-            Your Business Memory
-        </div>
-    </div>
-    <div class="barni-divider"></div>
-    """,
-    unsafe_allow_html=True,
-)
+elif section == "📊 העסק":
+    page = st.sidebar.radio(
+        "העסק",
+        [
+            "דשבורד",
+            "ספקים",
+        ],
+    )
 
-def navigation_button(
-    label: str,
-    target: str,
-    *,
-    key: str,
-) -> None:
-    active = st.session_state.current_page == target
+elif section == "💬 Ask Barni":
+    page = "Ask Barni"
 
-    if st.sidebar.button(
-        label,
-        key=key,
-        type="primary" if active else "secondary",
-        width="stretch",
-    ):
-        st.session_state.current_page = target
-        st.rerun()
-
-
-navigation_button(
-    "🏠  Home",
-    PAGE_HOME,
-    key="nav_home",
-)
-navigation_button(
-    "📄  Feed Barni",
-    PAGE_FEED,
-    key="nav_feed",
-)
-navigation_button(
-    "🔍  Search Invoices",
-    PAGE_SEARCH,
-    key="nav_search",
-)
-navigation_button(
-    "🧠  Knowledge",
-    PAGE_KNOWLEDGE,
-    key="nav_knowledge",
-)
-navigation_button(
-    "📈  Insights",
-    PAGE_INSIGHTS,
-    key="nav_insights",
-)
-
-st.sidebar.markdown(
-    '<div class="barni-divider"></div>',
-    unsafe_allow_html=True,
-)
-
-with st.sidebar.expander("⚙  Developer"):
-    developer_pages = {
-        "בדיקת מאגר": "בדיקת מאגר",
-        "חילוץ AI": "חילוץ AI",
-        "הגירת מאגר": "הגירת מאגר",
-        "סגירת חודש": "סגירת חודש",
-        "בריאות מסד": "בריאות מסד",
-        "העלאה ישנה": "העלאת חשבונית",
-        "ארכיון ישן": "ארכיון",
-    }
-
-    for label, target in developer_pages.items():
-        if st.button(
-            label,
-            key=f"developer_{target}",
-            width="stretch",
-        ):
-            st.session_state.current_page = target
-            st.rerun()
-
-st.sidebar.markdown(
-    '<div class="barni-version">Barni Alpha · 0.3</div>',
-    unsafe_allow_html=True,
-)
-
-page = st.session_state.current_page
+else:
+    page = st.sidebar.radio(
+        "מערכת",
+        [
+            "בדיקת מאגר",
+            "חילוץ AI",
+            "הגירת מאגר",
+            "סגירת חודש",
+            "בריאות מסד",
+        ],
+    )
 
 if page == "Barni":
     st.subheader("🥚 Barni")
@@ -422,13 +292,6 @@ if page == "Barni":
         "ככל שייכנס יותר מידע, התובנות יהפכו מדויקות ושימושיות יותר."
     )
 
-
-    st.markdown("---")
-    st.markdown("## 💬 Ask Barni")
-    st.caption(
-        "שאל על ספקים, חשבוניות, הוצאות והמידע העסקי שכבר למדתי."
-    )
-    render_ai_accountant()
 
 if page == "העלאת חשבונית":
     uploaded = st.file_uploader(
@@ -643,3 +506,5 @@ if page == "ספקים":
     render_suppliers_page()
 
 
+if page == "Ask Barni":
+    render_ai_accountant()
