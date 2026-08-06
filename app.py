@@ -1,3 +1,4 @@
+from ui.home import render_home
 
 import re
 import sqlite3
