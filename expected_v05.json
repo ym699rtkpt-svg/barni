@@ -1,0 +1,31 @@
+{
+  "baba_781": {
+    "supplier": "בבאיי משה",
+    "document_type": "חשבונית מס",
+    "invoice_number": "781",
+    "invoice_date": "2026-07-27",
+    "subtotal": 2800.0,
+    "vat": 504.0,
+    "total": 3304.0,
+    "item_count": 1
+  },
+  "michal_841": {
+    "supplier": "מיכל עלים בגבעה",
+    "document_type": "חשבונית מס",
+    "invoice_number": "841",
+    "invoice_date": "2026-07-31",
+    "subtotal": 1043.35,
+    "vat": 0.0,
+    "total": 1043.35,
+    "item_count": 1
+  },
+  "aleh_statement": {
+    "supplier": "עלה עלה בע\"מ",
+    "document_type": "ריכוז חשבון",
+    "invoice_date": "2026-06-01",
+    "subtotal": 1768.8,
+    "vat": 21.53,
+    "total": 1790.33,
+    "item_count": 44
+  }
+}

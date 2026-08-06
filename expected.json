@@ -1,0 +1,73 @@
+{
+  "חשבונית1": {
+    "supplier": "בבאיי משה",
+    "invoice_number": "844",
+    "invoice_date": "2026-07-30",
+    "total": 3304.0
+  },
+  "חשבונית2": {
+    "supplier": "קבוצת עדן דוד בע\"מ",
+    "invoice_number": "02/005458",
+    "invoice_date": "2026-07-24",
+    "subtotal": 450.85,
+    "vat": 81.15,
+    "total": 532.0,
+    "item_count": 3
+  },
+  "חשבונית4": {
+    "supplier": "קניון בשביל כולם",
+    "invoice_number": "65857",
+    "invoice_date": "2026-08-02",
+    "subtotal": 1055.09,
+    "vat": 189.91,
+    "total": 1245.0
+  },
+  "חשבונית5": {
+    "supplier": "טמפו שיווק / טמפו משקאות",
+    "invoice_number": "103578082",
+    "invoice_date": "2026-06-15",
+    "subtotal": 12643.56,
+    "vat": 2275.84,
+    "total": 14919.4
+  },
+  "חשבונית6": {
+    "supplier": "טמפו שיווק / טמפו משקאות",
+    "invoice_number": "103633551",
+    "invoice_date": "2026-07-16",
+    "subtotal": -171.0,
+    "vat": -30.78,
+    "total": -201.78
+  },
+  "חשבונית7": {
+    "supplier": "אלקטרה קמעונאות בע\"מ",
+    "invoice_number": "477193452",
+    "invoice_date": "2026-08-03",
+    "subtotal": 83.9,
+    "vat": 15.1,
+    "total": 99.0
+  },
+  "חשבונית8": {
+    "supplier": "אלקטרה קמעונאות בע\"מ",
+    "invoice_number": "477198452",
+    "invoice_date": "2026-08-05",
+    "subtotal": 1567.8,
+    "vat": 282.2,
+    "total": 1850.0
+  },
+  "חשבונית9": {
+    "supplier": "57 קיי אס פי אקספרס בע\"מ",
+    "invoice_number": "3837044",
+    "invoice_date": "2026-08-04",
+    "subtotal": 261.86,
+    "vat": 47.14,
+    "total": 309.0
+  },
+  "חשבונית10": {
+    "supplier": "י.מ.ר אביזרים 2017 בע\"מ",
+    "invoice_number": "OV265001716",
+    "invoice_date": "2026-07-29",
+    "subtotal": 202.46,
+    "vat": 36.44,
+    "total": 238.9
+  }
+}

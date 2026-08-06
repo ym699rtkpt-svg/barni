@@ -1,0 +1,441 @@
+
+import re
+import sqlite3
+import subprocess
+import tempfile
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+
+from batch_dashboard import render_batch_dashboard
+from ai_dashboard import render_ai_dashboard
+from business_dashboard import render_business_dashboard
+from smart_archive import render_database_archive
+from daily_intake import render_daily_intake
+from database_dashboard import render_database_dashboard
+from migration_dashboard import render_migration_dashboard
+from month_closing import render_month_closing
+from database_diagnostics import render_database_diagnostics
+from supplier_page import render_suppliers_page
+from enhanced_dashboard import render_enhanced_dashboard
+from ai_accountant import render_ai_accountant
+
+APP_DIR = Path(__file__).resolve().parent
+DATA_DIR = APP_DIR / "data"
+UPLOAD_DIR = DATA_DIR / "uploads"
+PREVIEW_DIR = DATA_DIR / "previews"
+DB_PATH = DATA_DIR / "invoices.db"
+
+for folder in (DATA_DIR, UPLOAD_DIR, PREVIEW_DIR):
+    folder.mkdir(parents=True, exist_ok=True)
+
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS invoices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT NOT NULL,
+        original_file_name TEXT NOT NULL,
+        stored_file_path TEXT NOT NULL,
+        document_type TEXT,
+        supplier TEXT,
+        supplier_id TEXT,
+        invoice_number TEXT,
+        invoice_date TEXT,
+        due_date TEXT,
+        subtotal REAL,
+        vat REAL,
+        total REAL,
+        currency TEXT DEFAULT 'ILS',
+        notes TEXT,
+        raw_text TEXT
+    )
+    """)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS invoice_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        invoice_id INTEGER NOT NULL,
+        item_code TEXT,
+        description TEXT,
+        quantity REAL,
+        unit_price REAL,
+        line_total REAL,
+        FOREIGN KEY(invoice_id) REFERENCES invoices(id)
+    )
+    """)
+    conn.commit()
+    return conn
+
+
+def run_command(args):
+    result = subprocess.run(args, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "הפקודה נכשלה")
+    return result.stdout
+
+
+def convert_pdf_to_images(pdf_path: Path) -> list[Path]:
+    prefix = PREVIEW_DIR / f"{pdf_path.stem}_page"
+    run_command([
+        "/opt/homebrew/bin/pdftoppm",
+        "-png", "-r", "160",
+        str(pdf_path), str(prefix)
+    ])
+    return sorted(PREVIEW_DIR.glob(f"{pdf_path.stem}_page-*.png"))
+
+
+def extract_text(path: Path) -> str:
+    suffix = path.suffix.lower()
+
+    if suffix == ".pdf":
+        txt_path = path.with_suffix(".txt")
+        try:
+            run_command([
+                "/opt/homebrew/bin/pdftotext",
+                "-layout", str(path), str(txt_path)
+            ])
+            text = txt_path.read_text(encoding="utf-8", errors="ignore")
+            if len(re.sub(r"\s+", "", text)) >= 40:
+                return text
+        except Exception:
+            pass
+
+        pages = convert_pdf_to_images(path)
+        texts = []
+        for page in pages:
+            with tempfile.TemporaryDirectory() as td:
+                out_base = Path(td) / "ocr"
+                run_command([
+                    "/opt/homebrew/bin/tesseract",
+                    str(page), str(out_base),
+                    "-l", "heb+eng", "--psm", "6"
+                ])
+                txt = out_base.with_suffix(".txt")
+                if txt.exists():
+                    texts.append(txt.read_text(encoding="utf-8", errors="ignore"))
+        return "\n".join(texts)
+
+    if suffix in {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"}:
+        with tempfile.TemporaryDirectory() as td:
+            out_base = Path(td) / "ocr"
+            run_command([
+                "/opt/homebrew/bin/tesseract",
+                str(path), str(out_base),
+                "-l", "heb+eng", "--psm", "6"
+            ])
+            return out_base.with_suffix(".txt").read_text(
+                encoding="utf-8", errors="ignore"
+            )
+
+    raise ValueError("סוג קובץ לא נתמך")
+
+
+from parser_engine import parse_invoice as infer_fields, extract_items
+
+
+def save_invoice(data, items_df, uploaded_name, stored_path, raw_text):
+    conn = get_db()
+    cursor = conn.execute("""
+        INSERT INTO invoices (
+            created_at, original_file_name, stored_file_path,
+            document_type, supplier, supplier_id, invoice_number,
+            invoice_date, due_date, subtotal, vat, total,
+            currency, notes, raw_text
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        datetime.now().isoformat(timespec="seconds"),
+        uploaded_name,
+        str(stored_path),
+        data["document_type"],
+        data["supplier"],
+        data["supplier_id"],
+        data["invoice_number"],
+        data["invoice_date"],
+        data["due_date"],
+        data["subtotal"],
+        data["vat"],
+        data["total"],
+        data["currency"],
+        data["notes"],
+        raw_text,
+    ))
+    invoice_id = cursor.lastrowid
+
+    for _, item in items_df.iterrows():
+        description = str(item.get("תיאור", "")).strip()
+        if not description:
+            continue
+        conn.execute("""
+            INSERT INTO invoice_items (
+                invoice_id, item_code, description,
+                quantity, unit_price, line_total
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            invoice_id,
+            str(item.get("קוד מוצר", "")).strip(),
+            description,
+            float(item.get("כמות", 0) or 0),
+            float(item.get("מחיר יחידה", 0) or 0),
+            float(item.get("סה״כ שורה", 0) or 0),
+        ))
+
+    conn.commit()
+
+
+def load_invoices():
+    return pd.read_sql_query("""
+        SELECT
+            id,
+            invoice_date,
+            supplier,
+            document_type,
+            invoice_number,
+            subtotal,
+            vat,
+            total,
+            original_file_name
+        FROM invoices
+        ORDER BY id DESC
+    """, get_db())
+
+
+st.set_page_config(page_title="חשבוניות למסעדה", layout="wide")
+
+st.markdown("""
+<style>
+.block-container {padding-top: 1.2rem; padding-bottom: 2rem;}
+[data-testid="stFileUploader"] {
+    border: 1px solid #ddd;
+    border-radius: 12px;
+    padding: 14px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.title("חשבוניות למסעדה")
+st.caption("מעלים חשבונית, רואים אותה במלואה, בודקים את הנתונים ושומרים.")
+
+upload_tab, daily_intake_tab, archive_tab, smart_archive_tab, batch_tab, ai_tab, business_tab, suppliers_tab, ai_accountant_tab, migration_tab, month_tab, diagnostics_tab = st.tabs(["העלאת חשבונית", "קליטה יומית", "ארכיון", "חיפוש חשבוניות", "בדיקת מאגר", "חילוץ AI", "דשבורד", "ספקים", "AI Accountant", "הגירת מאגר", "סגירת חודש", "בריאות מסד"])
+
+with upload_tab:
+    uploaded = st.file_uploader(
+        "בחר תמונה או PDF",
+        type=["pdf", "png", "jpg", "jpeg", "tif", "tiff", "webp"]
+    )
+
+    if uploaded:
+        stored_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uploaded.name}"
+        stored_path = UPLOAD_DIR / stored_name
+        stored_path.write_bytes(uploaded.getbuffer())
+
+        with st.spinner("קורא ומעבד את החשבונית..."):
+            try:
+                raw_text = extract_text(stored_path)
+                guessed = infer_fields(raw_text)
+                extracted_items = extract_items(raw_text)
+                preview_pages = (
+                    convert_pdf_to_images(stored_path)
+                    if stored_path.suffix.lower() == ".pdf"
+                    else [stored_path]
+                )
+            except Exception as exc:
+                st.error(f"שגיאה בעיבוד החשבונית: {exc}")
+                st.stop()
+
+        left, right = st.columns([1.2, 1], gap="large")
+
+        with left:
+            st.subheader("תצוגת החשבונית")
+            if len(preview_pages) == 1:
+                st.image(str(preview_pages[0]), width="stretch")
+            else:
+                page_number = st.selectbox(
+                    "עמוד",
+                    list(range(1, len(preview_pages) + 1)),
+                    format_func=lambda x: f"עמוד {x}"
+                )
+                st.image(str(preview_pages[page_number - 1]), width="stretch")
+
+        with right:
+            st.subheader("הנתונים שחולצו")
+
+            document_types = [
+                "חשבונית מס",
+                "חשבונית מס/קבלה",
+                "קבלה",
+                "חשבונית זיכוי",
+                "תעודת משלוח",
+                "ריכוז חשבון",
+                "דרישת תשלום",
+                "אחר"
+            ]
+            default_index = (
+                document_types.index(guessed["document_type"])
+                if guessed["document_type"] in document_types
+                else 0
+            )
+
+            document_type = st.selectbox(
+                "סוג מסמך", document_types, index=default_index
+            )
+            supplier = st.text_input("שם ספק", guessed["supplier"])
+            supplier_id = st.text_input(
+                "ח.פ. / עוסק מורשה", guessed["supplier_id"]
+            )
+            invoice_number = st.text_input(
+                "מספר חשבונית / קבלה", guessed["invoice_number"]
+            )
+            invoice_date = st.text_input(
+                "תאריך חשבונית",
+                guessed["invoice_date"],
+                placeholder="YYYY-MM-DD"
+            )
+            due_date = st.text_input(
+                "תאריך פירעון",
+                guessed["due_date"],
+                placeholder="YYYY-MM-DD"
+            )
+
+            subtotal = st.number_input(
+                "סכום לפני מע״מ",
+                value=float(guessed["subtotal"] or 0),
+                step=0.01,
+                format="%.2f"
+            )
+            vat = st.number_input(
+                "מע״מ",
+                value=float(guessed["vat"] or 0),
+                step=0.01,
+                format="%.2f"
+            )
+            total = st.number_input(
+                "סכום כולל",
+                value=float(guessed["total"] or 0),
+                step=0.01,
+                format="%.2f"
+            )
+            notes = st.text_area("הערות")
+
+            if subtotal or vat or total:
+                expected_total = round(subtotal + vat, 2)
+                if abs(expected_total - total) <= 0.02:
+                    st.success("בדיקת סכומים תקינה")
+                else:
+                    st.warning(
+                        f"לפי לפני מע״מ + מע״מ, הסכום אמור להיות "
+                        f"{expected_total:,.2f} ₪"
+                    )
+
+        st.divider()
+        st.subheader("שורות מוצרים")
+
+        items_df = pd.DataFrame(extracted_items) if extracted_items else pd.DataFrame([{
+            "קוד מוצר": "",
+            "תיאור": "",
+            "כמות": 1.0,
+            "מחיר יחידה": 0.0,
+            "סה״כ שורה": 0.0,
+        }])
+
+        edited_items = st.data_editor(
+            items_df,
+            num_rows="dynamic",
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "קוד מוצר": st.column_config.TextColumn("קוד מוצר"),
+                "תיאור": st.column_config.TextColumn("תיאור", width="large"),
+                "כמות": st.column_config.NumberColumn("כמות", min_value=0.0),
+                "מחיר יחידה": st.column_config.NumberColumn(
+                    "מחיר יחידה", format="%.2f ₪"
+                ),
+                "סה״כ שורה": st.column_config.NumberColumn(
+                    "סה״כ שורה", format="%.2f ₪"
+                ),
+            }
+        )
+
+        with st.expander("הצג טקסט שחולץ"):
+            st.text_area(
+                "טקסט גולמי",
+                raw_text,
+                height=260,
+                label_visibility="collapsed"
+            )
+
+        if st.button("שמור חשבונית", type="primary", width="stretch"):
+            if not supplier:
+                st.error("חסר שם ספק.")
+            elif not invoice_date:
+                st.error("חסר תאריך חשבונית.")
+            else:
+                save_invoice(
+                    {
+                        "document_type": document_type,
+                        "supplier": supplier,
+                        "supplier_id": supplier_id,
+                        "invoice_number": invoice_number,
+                        "invoice_date": invoice_date,
+                        "due_date": due_date,
+                        "subtotal": subtotal,
+                        "vat": vat,
+                        "total": total,
+                        "currency": "ILS",
+                        "notes": notes,
+                    },
+                    edited_items,
+                    uploaded.name,
+                    stored_path,
+                    raw_text
+                )
+                st.success("החשבונית ושורות המוצרים נשמרו בארכיון.")
+
+with archive_tab:
+    invoices = load_invoices()
+    if invoices.empty:
+        st.info("עדיין לא נשמרו חשבוניות.")
+    else:
+        st.dataframe(invoices, width="stretch", hide_index=True)
+
+
+with batch_tab:
+    render_batch_dashboard()
+
+
+with ai_tab:
+    render_ai_dashboard()
+
+
+with business_tab:
+    render_enhanced_dashboard()
+
+
+with smart_archive_tab:
+    render_database_archive()
+
+
+with daily_intake_tab:
+    render_daily_intake()
+
+
+with migration_tab:
+    render_migration_dashboard()
+
+
+with month_tab:
+    render_month_closing()
+
+
+with diagnostics_tab:
+    render_database_diagnostics()
+
+
+with suppliers_tab:
+    render_suppliers_page()
+
+
+with ai_accountant_tab:
+    render_ai_accountant()
