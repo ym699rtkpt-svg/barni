@@ -17,6 +17,8 @@ class KnowledgeEngine:
         self.memory = MemoryManager()
 
     def handle_event(self, event: KnowledgeEvent) -> None:
+        print(f"[KnowledgeEngine] Handling event: {event.event_type}")
+
         self.supplier.handle(event)
         self.product.handle(event)
         self.pricing.handle(event)
