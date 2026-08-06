@@ -1,17 +1,24 @@
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Any
+from knowledge_engine.events import KnowledgeEvent
 
-
-@dataclass
-class KnowledgeEvent:
-    event_type: str
-    source: str
-    payload: dict[str, Any]
-    created_at: datetime
+from knowledge_engine.supplier_manager import SupplierManager
+from knowledge_engine.product_manager import ProductManager
+from knowledge_engine.pricing_manager import PricingManager
+from knowledge_engine.metrics_manager import MetricsManager
+from knowledge_engine.memory_manager import MemoryManager
 
 
 class KnowledgeEngine:
 
-    def process(self, event: KnowledgeEvent) -> None:
-        print(f"Processing {event.event_type}")
+    def __init__(self):
+        self.supplier = SupplierManager()
+        self.product = ProductManager()
+        self.pricing = PricingManager()
+        self.metrics = MetricsManager()
+        self.memory = MemoryManager()
+
+    def handle_event(self, event: KnowledgeEvent) -> None:
+        self.supplier.handle(event)
+        self.product.handle(event)
+        self.pricing.handle(event)
+        self.metrics.handle(event)
+        self.memory.handle(event)
