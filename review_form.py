@@ -9,6 +9,11 @@ import streamlit as st
 
 from database import duplicate_exists, insert_invoice
 
+from knowledge_engine.engine import KnowledgeEngine
+from knowledge_engine.events import KnowledgeEvent
+
+
+knowledge_engine = KnowledgeEngine()
 
 TAX_TREATMENTS = [
     "חייב במע״מ",
@@ -216,5 +221,13 @@ def approve_to_database(record: dict, updated_document: dict) -> tuple[bool, str
         )
     except Exception as exc:
         return False, str(exc)
+
+    event = KnowledgeEvent(
+        event_type="invoice_approved",
+        payload=updated_document,
+        created_at=datetime.now(),
+    )
+
+    knowledge_engine.handle_event(event)
 
     return True, f"המסמך נשמר במסד ובארכיון. מזהה: {invoice_id}"
