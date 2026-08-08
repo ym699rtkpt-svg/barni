@@ -5,6 +5,7 @@ from knowledge_engine.product_manager import ProductManager
 from knowledge_engine.pricing_manager import PricingManager
 from knowledge_engine.metrics_manager import MetricsManager
 from knowledge_engine.memory_manager import MemoryManager
+from knowledge_engine.identity_manager import IdentityManager
 
 
 class KnowledgeEngine:
@@ -15,6 +16,7 @@ class KnowledgeEngine:
         self.pricing = PricingManager()
         self.metrics = MetricsManager()
         self.memory = MemoryManager()
+        self.identity = IdentityManager()
 
     def handle_event(self, event: KnowledgeEvent) -> None:
         print(f"[KnowledgeEngine] Handling event: {event.event_type}")
@@ -24,3 +26,4 @@ class KnowledgeEngine:
         self.pricing.handle(event)
         self.metrics.handle(event)
         self.memory.handle(event)
+        self.identity.handle(event)

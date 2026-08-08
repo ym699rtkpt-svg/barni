@@ -1,5 +1,11 @@
+from ui.feed import render_feed
 from ui.home import render_home
-
+from ui.business_memory import render_business_memory
+from ui.identity_review import render_identity_review
+from ui.pilot_mode import render_pilot_mode
+from ui.accountant_workspace import render_accountant_workspace
+from ui.design_system import render_global_styles
+from ui.recipes import render_recipes
 import re
 import sqlite3
 import subprocess
@@ -25,6 +31,7 @@ from database_diagnostics import render_database_diagnostics
 from supplier_page import render_suppliers_page
 from enhanced_dashboard import render_enhanced_dashboard
 from ai_accountant import render_ai_accountant
+from services.pilot_support import APP_VERSION, log_runtime_error
 
 APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = APP_DIR / "data"
@@ -207,22 +214,9 @@ def load_invoices():
 
 
 st.set_page_config(page_title="Barni", page_icon="🥚", layout="wide")
-
-st.markdown("""
-<style>
-.block-container {padding-top: 1.2rem; padding-bottom: 2rem;}
-[data-testid="stFileUploader"] {
-    border: 1px solid #ddd;
-    border-radius: 12px;
-    padding: 14px;
-}
-</style>
-""", unsafe_allow_html=True)
+render_global_styles()
 
 render_landing_page()
-
-st.title("Barni")
-st.caption("מאכילים את Barni במידע עסקי ומקבלים זיכרון, סדר ותובנות.")
 
 st.markdown(
     """
@@ -270,9 +264,44 @@ st.markdown(
     }
 
     .barni-sidebar-egg {
+        display: inline-block;
         font-size: 2.4rem;
         line-height: 1;
         margin-bottom: 0.45rem;
+        transform-origin: 50% 86%;
+        animation: barni-egg-hatch 3s ease-in-out infinite;
+        will-change: transform, filter;
+    }
+
+    @keyframes barni-egg-hatch {
+        0%, 72%, 84%, 96%, 100% {
+            transform: rotate(0deg) scale(1, 1);
+            filter: drop-shadow(0 2px 3px rgba(35, 60, 46, 0.08));
+        }
+        76% {
+            transform: rotate(-1.6deg) scale(1.012, 0.992);
+            filter: drop-shadow(1px 4px 4px rgba(35, 60, 46, 0.14));
+        }
+        80% {
+            transform: rotate(1.7deg) scale(0.994, 1.014);
+            filter: drop-shadow(-1px 4px 5px rgba(35, 60, 46, 0.15));
+        }
+        88% {
+            transform: rotate(-1.1deg) scale(1.008, 0.996);
+            filter: drop-shadow(1px 3px 4px rgba(35, 60, 46, 0.12));
+        }
+        92% {
+            transform: rotate(1deg) scale(0.997, 1.009);
+            filter: drop-shadow(-1px 3px 4px rgba(35, 60, 46, 0.12));
+        }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .barni-sidebar-egg {
+            animation: none;
+            transform: none;
+            filter: none;
+        }
     }
 
     .barni-sidebar-name {
@@ -309,7 +338,12 @@ PAGE_HOME = "Barni"
 PAGE_FEED = "קליטה יומית"
 PAGE_SEARCH = "חיפוש חשבוניות"
 PAGE_KNOWLEDGE = "ספקים"
+PAGE_MEMORY = "Business Memory"
+PAGE_IDENTITY_REVIEW = "Identity Review"
 PAGE_INSIGHTS = "דשבורד"
+PAGE_RECIPES = "מתכונים"
+PAGE_PILOT = "Pilot Mode"
+PAGE_ACCOUNTANT = "Accountant Workspace"
 
 if "current_page" not in st.session_state:
     st.session_state.current_page = PAGE_HOME
@@ -342,6 +376,8 @@ def navigation_button(
         type="primary" if active else "secondary",
         width="stretch",
     ):
+        if target == PAGE_PILOT:
+            st.session_state.pilot_source_page = st.session_state.current_page
         st.session_state.current_page = target
         st.rerun()
 
@@ -362,22 +398,41 @@ navigation_button(
     key="nav_search",
 )
 navigation_button(
-    "🧠  Knowledge",
+    "◫  Knowledge",
     PAGE_KNOWLEDGE,
     key="nav_knowledge",
+)
+navigation_button(
+    "🧠  Business Memory",
+    PAGE_MEMORY,
+    key="nav_memory",
 )
 navigation_button(
     "📈  Insights",
     PAGE_INSIGHTS,
     key="nav_insights",
 )
-
+navigation_button(
+    "🍽️  Recipes",
+    PAGE_RECIPES,
+    key="nav_recipes",
+)
+navigation_button(
+    "▣  Accountant Workspace",
+    PAGE_ACCOUNTANT,
+    key="nav_accountant",
+)
+navigation_button(
+    "◇  Pilot Dashboard",
+    PAGE_PILOT,
+    key="nav_pilot",
+)
 st.sidebar.markdown(
     '<div class="barni-divider"></div>',
     unsafe_allow_html=True,
 )
 
-with st.sidebar.expander("⚙  Developer"):
+with st.sidebar.expander("Internal tools"):
     developer_pages = {
         "בדיקת מאגר": "בדיקת מאגר",
         "חילוץ AI": "חילוץ AI",
@@ -398,38 +453,41 @@ with st.sidebar.expander("⚙  Developer"):
             st.rerun()
 
 st.sidebar.markdown(
-    '<div class="barni-version">Barni Alpha · 0.3</div>',
+    f'<div class="barni-version">Barni · {APP_VERSION}</div>',
     unsafe_allow_html=True,
 )
 
 page = st.session_state.current_page
 
-if page == "Barni":
-    st.subheader("🥚 Barni")
-    st.caption("אני לומד את העסק מכל מסמך שנכנס.")
 
-    col1, col2 = st.columns([1, 2])
+def render_page_safely(page_name: str, renderer) -> None:
+    try:
+        renderer()
+    except Exception as exc:
+        log_runtime_error(page_name, exc)
+        st.error("Barni ran into a problem on this page. The details were logged for review.")
 
-    with col1:
-        st.markdown("### Feed Barni")
-        st.write("העלה חשבוניות כדי להרחיב את הזיכרון העסקי.")
 
-    with col2:
-        st.markdown("### מה אני כבר מכיר")
-        st.write("ספקים, חשבוניות, מוצרים, מחירים ומגמות.")
+if page == PAGE_HOME:
+    render_page_safely(PAGE_HOME, render_home)
 
-    st.info(
-        "Barni עדיין בתחילת ההתפתחות. "
-        "ככל שייכנס יותר מידע, התובנות יהפכו מדויקות ושימושיות יותר."
+if page == PAGE_RECIPES:
+    render_page_safely(PAGE_RECIPES, render_recipes)
+
+if page == PAGE_MEMORY:
+    render_page_safely(PAGE_MEMORY, render_business_memory)
+
+if page == PAGE_IDENTITY_REVIEW:
+    render_page_safely(PAGE_IDENTITY_REVIEW, render_identity_review)
+
+if page == PAGE_ACCOUNTANT:
+    render_page_safely(PAGE_ACCOUNTANT, render_accountant_workspace)
+
+if page == PAGE_PILOT:
+    render_page_safely(
+        PAGE_PILOT,
+        lambda: render_pilot_mode(st.session_state.get("pilot_source_page", PAGE_HOME)),
     )
-
-
-    st.markdown("---")
-    st.markdown("## 💬 Ask Barni")
-    st.caption(
-        "שאל על ספקים, חשבוניות, הוצאות והמידע העסקי שכבר למדתי."
-    )
-    render_ai_accountant()
 
 if page == "העלאת חשבונית":
     uploaded = st.file_uploader(
@@ -453,6 +511,7 @@ if page == "העלאת חשבונית":
                     else [stored_path]
                 )
             except Exception as exc:
+                log_runtime_error("העלאת חשבונית", exc)
                 st.error(f"שגיאה בעיבוד החשבונית: {exc}")
                 st.stop()
 
@@ -605,42 +664,40 @@ if page == "העלאת חשבונית":
                 st.success("החשבונית ושורות המוצרים נשמרו בארכיון.")
 
 if page == "ארכיון":
-    render_database_archive()
+    render_page_safely(page, render_database_archive)
 
 
 if page == "בדיקת מאגר":
-    render_batch_dashboard()
+    render_page_safely(page, render_batch_dashboard)
 
 
 if page == "חילוץ AI":
-    render_ai_dashboard()
+    render_page_safely(page, render_ai_dashboard)
 
 
 if page == "דשבורד":
-    render_enhanced_dashboard()
+    render_page_safely(page, render_enhanced_dashboard)
 
 
 if page == "חיפוש חשבוניות":
-    render_database_archive()
+    render_page_safely(page, render_database_archive)
 
 
 if page == "קליטה יומית":
-    render_daily_intake()
+    render_page_safely(page, render_daily_intake)
 
 
 if page == "הגירת מאגר":
-    render_migration_dashboard()
+    render_page_safely(page, render_migration_dashboard)
 
 
 if page == "סגירת חודש":
-    render_month_closing()
+    render_page_safely(page, render_month_closing)
 
 
 if page == "בריאות מסד":
-    render_database_diagnostics()
+    render_page_safely(page, render_database_diagnostics)
 
 
 if page == "ספקים":
-    render_suppliers_page()
-
-
+    render_page_safely(page, render_suppliers_page)
