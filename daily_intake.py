@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import time
 from datetime import datetime
@@ -11,17 +12,19 @@ from typing import Callable
 import pandas as pd
 import streamlit as st
 
-from ai_extractor import extract_with_ai
-from database import duplicate_invoice
-from hybrid_engine import normalize_document, validate_document
+from database import duplicate_invoice, root_dir
+from hybrid_engine import extract_hybrid, normalize_document, validate_document
 from knowledge_engine.line_classifier import classify_invoice_line
 from review_form import approve_to_database_detailed, document_review_form
 from services.barni_thinking import think_about_invoice
 from services.business_memory import business_memory_data
 from services.business_stories import BusinessStoryEngine, StoryContext
-from services.invoice_workflow import invoice_workflow_snapshot
+from services.invoice_workflow import invoice_workflow_snapshot, load_queue_records
 from services.invoice_intelligence_adapter import analyze_invoice_record
-from services.pilot_support import log_pilot_event
+from services.pilot_support import log_pilot_event, log_runtime_error
+from services.document_text import extract_document_text
+from services.invoice_reuse import approved_document_for_identical_source
+from services.feed_journal import FeedJournalCursor
 from ui.barni_thinking import render_barni_thinking
 from ui.business_story import render_business_story
 from ui.workflow_status import render_workflow_status
@@ -422,7 +425,14 @@ def _render_completion(completion: dict) -> None:
 
 def _view_what_barni_learned() -> None:
     st.session_state.pop("daily_intake_completion", None)
-    st.session_state.current_page = "ספקים"
+    query = str(st.session_state.get("daily_intake_last_search") or "").strip()
+    if query:
+        st.session_state.search_query = query
+    st.session_state.current_page = "חיפוש חשבוניות"
+
+
+def _open_business_memory() -> None:
+    st.session_state.current_page = "Business Memory"
 
 
 def _open_evidence_invoice(invoice_id: int) -> None:
@@ -441,7 +451,7 @@ def _safe_name(name: str) -> str:
 
 
 def _paths() -> dict[str, Path]:
-    root = Path.home() / "restaurant-invoices"
+    root = root_dir()
     paths = {
         "incoming": root / "daily-intake" / "incoming",
         "processed": root / "daily-intake" / "processed",
@@ -454,20 +464,28 @@ def _paths() -> dict[str, Path]:
 
 
 def _load_queue(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
+    """Compatibility wrapper around the canonical workflow queue reader."""
+    return load_queue_records(path)
 
 
 def _save_queue(path: Path, queue: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(queue, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    payload = json.dumps(queue, ensure_ascii=False, indent=2)
+    backup = path.with_suffix(path.suffix + ".backup")
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            existing = None
+        if isinstance(existing, list):
+            shutil.copy2(path, backup)
+
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
 
 
 def _record_id(file_name: str) -> str:
@@ -489,6 +507,12 @@ def _status_for(document: dict) -> str:
     return "ready"
 
 
+def _document_recovery_message(path: Path) -> str:
+    if path.suffix.lower() == ".pdf":
+        return "I couldn't read this PDF. Try a clearer copy, or add the invoice details during review."
+    return "I couldn't read this image. Try a sharper photo, or add the invoice details during review."
+
+
 def _review_reason(record: dict) -> str:
     """Return the stored evidence that explains why a document needs attention."""
     document = record.get("document") or {}
@@ -500,9 +524,10 @@ def _review_reason(record: dict) -> str:
             value = [value]
         reasons.extend(str(item).strip() for item in value if str(item).strip())
 
-    error = str(record.get("error") or "").strip()
-    if error:
-        reasons.append(error)
+    if record.get("queue_status") == "error":
+        reasons.append(_document_recovery_message(
+            Path(record.get("stored_file") or "invoice")
+        ))
 
     if not reasons and record.get("queue_status") == "review":
         confidence = float(document.get("confidence") or 0.0)
@@ -518,6 +543,22 @@ def _review_reason(record: dict) -> str:
 
 def _needs_review(record: dict) -> bool:
     return record.get("queue_status") in {"review", "error"}
+
+
+def _approval_blockers(document: dict) -> list[str]:
+    labels = {
+        "supplier": "supplier",
+        "invoice_date": "invoice date",
+        "total": "total",
+        "document_type": "document type",
+    }
+    missing = [label for field, label in labels.items()
+               if document.get(field) in (None, "")]
+    if document.get("document_type") in {
+        "חשבונית מס", "חשבונית מס/קבלה", "חשבונית זיכוי", "תעודת משלוח",
+    } and not document.get("items"):
+        missing.append("at least one product")
+    return missing
 
 
 def _queue_priority(record: dict) -> tuple[int, str]:
@@ -594,17 +635,17 @@ def _render_confidence_summary(document: dict) -> None:
 def process_files(
     uploaded_files,
     model: str,
-    on_stage: Callable[[str], None] | None = None,
+    on_stage: Callable[[str, int, int, str], None] | None = None,
 ) -> None:
     paths = _paths()
     queue = _load_queue(paths["queue"])
-    notify = on_stage or (lambda stage: None)
+    notify = on_stage or (lambda _stage, _index, _total, _name: None)
 
-    for uploaded in uploaded_files:
+    total_files = len(uploaded_files)
+    for index, uploaded in enumerate(uploaded_files, start=1):
         safe_name = _safe_name(uploaded.name)
         record_id = _record_id(safe_name)
         stored = paths["incoming"] / f"{record_id}_{safe_name}"
-        stored.write_bytes(uploaded.getbuffer())
 
         record = {
             "id": record_id,
@@ -617,11 +658,26 @@ def process_files(
         }
 
         try:
-            notify("reading")
-            document, method = extract_with_ai(stored, model=model)
-            notify("supplier")
+            stored.write_bytes(uploaded.getbuffer())
+            notify("reading", index, total_files, safe_name)
+            document = approved_document_for_identical_source(stored, safe_name)
+            if document is not None:
+                method = "stored_evidence_match"
+                raw_text = ""
+                local_method = "stored_evidence_match"
+            else:
+                raw_text, local_method = extract_document_text(stored)
+                document, method = extract_hybrid(
+                    stored,
+                    raw_text=raw_text,
+                    use_ai=True,
+                    ai_model=model,
+                )
+                document["raw_text"] = raw_text
+            document["local_text_method"] = local_method
+            notify("supplier", index, total_files, safe_name)
             document = normalize_document(document)
-            notify("products")
+            notify("products", index, total_files, safe_name)
             validation = validate_document(document)
             document["machine_issues"] = validation["machine_issues"]
             document["model_notes"] = validation["model_notes"]
@@ -643,10 +699,12 @@ def process_files(
 
         except Exception as exc:
             record["queue_status"] = "error"
-            record["error"] = str(exc)
+            record["error"] = _document_recovery_message(stored)
+            record["technical_error"] = str(exc)
 
         queue.append(record)
         _save_queue(paths["queue"], queue)
+        notify("complete", index, total_files, safe_name)
 
 
 def _remove_from_active_queue(record_id: str, new_status: str) -> None:
@@ -682,7 +740,10 @@ def reject_record(record_id: str) -> None:
 
 
 def _approve_record(record: dict, duplicate_resolution: str = "ask") -> dict:
-    memory_before = business_memory_data()
+    try:
+        memory_before = business_memory_data()
+    except Exception:
+        memory_before = None
     progress_messages = {
         "duplicate_check": "Checking for duplicates",
         "saving": "Saving the approved invoice",
@@ -703,40 +764,63 @@ def _approve_record(record: dict, duplicate_resolution: str = "ask") -> dict:
             duplicate_resolution=duplicate_resolution,
         )
         status.update(
-            label="הזיכרון העסקי עודכן" if success else "נדרשת החלטה",
+            label="Business Memory updated" if success else "Your decision is needed",
             state="complete" if success or outcome["outcome"] == "duplicate" else "error",
             expanded=False,
         )
 
     if success:
+        st.session_state.pop("daily_intake_recovery", None)
         if outcome["outcome"] == "skipped":
             completion = {"outcome": "skipped"}
             queue_status = "skipped"
         else:
-            delta = _memory_delta(memory_before, business_memory_data())
+            try:
+                memory_after = business_memory_data()
+                delta = (
+                    _memory_delta(memory_before, memory_after)
+                    if memory_before is not None
+                    else {"invoices": 0, "suppliers": 0, "products": 0, "price_points": 0}
+                )
+            except Exception:
+                delta = {"invoices": 0, "suppliers": 0, "products": 0, "price_points": 0}
             completion = {
                 "outcome": outcome["outcome"],
                 **delta,
             }
             queue_status = "approved"
+        _remove_from_active_queue(record["id"], queue_status)
         learning_delta = (
             completion
             if outcome["outcome"] != "skipped"
             else {"invoices": 0, "suppliers": 0, "products": 0, "price_points": 0}
         )
-        story = BusinessStoryEngine().generate(
-            StoryContext(
-                current_invoice_id=outcome.get("invoice_id"),
-                approval_outcome=outcome.get("outcome", ""),
-                memory_delta=learning_delta,
-            ),
-            max_stories=1,
-        )[0]
-        completion["story"] = story
-        st.session_state["barni_latest_business_story"] = story
+        try:
+            stories = BusinessStoryEngine().generate(
+                StoryContext(
+                    current_invoice_id=outcome.get("invoice_id"),
+                    approval_outcome=outcome.get("outcome", ""),
+                    memory_delta=learning_delta,
+                ),
+                max_stories=1,
+            )
+        except Exception:
+            stories = []
+        story = stories[0] if stories else None
+        if story is not None:
+            completion["story"] = story
+            st.session_state["barni_latest_business_story"] = story
         st.session_state["daily_intake_completion"] = completion
-        _remove_from_active_queue(record["id"], queue_status)
+        if outcome["outcome"] != "skipped":
+            if story is not None:
+                st.session_state.setdefault("daily_intake_batch_learning", []).append(story)
+            document = record.get("document") or {}
+            st.session_state["daily_intake_last_search"] = (
+                str(document.get("supplier") or "").strip()
+                or str(document.get("invoice_number") or "").strip()
+            )
     elif outcome["outcome"] != "duplicate":
+        st.session_state["daily_intake_recovery"] = message
         st.error(message)
     else:
         log_pilot_event(
@@ -794,10 +878,11 @@ def _render_daily_intake_console():
                     "products": "Learning products",
                 }
 
-                def show_stage(stage: str) -> None:
+                def show_stage(stage: str, index: int, total: int, file_name: str) -> None:
                     if stage not in shown_stages:
-                        st.write(stage_labels[stage])
+                        st.write(stage_labels.get(stage, "Invoice processed"))
                         shown_stages.add(stage)
+                    st.caption(f"{index} of {total} · {file_name}")
 
                 process_files(uploaded, model, on_stage=show_stage)
                 st.write("✓ Invoice reading complete")
@@ -963,7 +1048,7 @@ def _render_daily_intake_console():
             for item in queue:
                 if item["id"] == selected_id:
                     item["document"] = updated_document
-                    item["queue_status"] = "ready"
+                    item["queue_status"] = _status_for(updated_document)
                     break
             _save_queue(paths["queue"], queue)
             st.success("Your edits were saved in the review queue.")
@@ -1040,12 +1125,14 @@ def _reset_feed_flow() -> None:
         "daily_intake_batch_ids",
         "daily_intake_batch_total",
         "daily_intake_batch_memory_before",
+        "daily_intake_batch_learning",
         "daily_intake_duplicate",
         "daily_intake_duplicates_found",
         "daily_intake_flow",
         "daily_intake_hatch_batch_token",
         "daily_intake_hatch_consumed_token",
         "daily_intake_notice",
+        "daily_intake_last_search",
         "daily_intake_review_ids",
         "daily_intake_skipped",
         "daily_intake_upload",
@@ -1115,7 +1202,11 @@ def _render_batch_summary(records: list[dict]) -> None:
     summary = _processing_summary(records)
     attention = summary["review"] + summary["error"]
     with st.container(key="feed_summary"):
-        st.markdown("### Barni learned something new")
+        st.markdown(
+            "### Your invoices are ready"
+            if summary["processed"]
+            else "### I need your help with these invoices"
+        )
         if summary["processed"]:
             st.write(f"✓ {_count_phrase(summary['processed'], 'invoice')} read")
         if summary["suppliers"]:
@@ -1159,6 +1250,54 @@ def _approve_ready_batch(records: list[dict]) -> None:
     st.session_state["daily_intake_flow"] = "done"
 
 
+def _records_requiring_review(records: list[dict]) -> list[str]:
+    return [record["id"] for record in records if _needs_review(record)]
+
+
+def _approve_clear_and_review_attention(records: list[dict]) -> None:
+    """Approve the clear records and review only records that need a decision."""
+    attention_ids = _records_requiring_review(records)
+    for index, record in enumerate(records):
+        if _needs_review(record):
+            continue
+        result = _approve_record(record)
+        if result["outcome"] == "duplicate":
+            st.session_state["daily_intake_duplicates_found"] = (
+                int(st.session_state.get("daily_intake_duplicates_found") or 0) + 1
+            )
+            st.session_state["daily_intake_duplicate"] = {
+                "record_id": record["id"],
+                "existing": result["existing"],
+            }
+            attention_ids = [
+                record["id"],
+                *attention_ids,
+                *[
+                    pending["id"]
+                    for pending in records[index + 1:]
+                    if not _needs_review(pending)
+                ],
+            ]
+            break
+        if not result["success"]:
+            attention_ids = [
+                record["id"],
+                *attention_ids,
+                *[
+                    pending["id"]
+                    for pending in records[index + 1:]
+                    if not _needs_review(pending)
+                ],
+            ]
+            break
+
+    if attention_ids:
+        _begin_review(list(dict.fromkeys(attention_ids)))
+    else:
+        st.session_state["daily_intake_review_ids"] = []
+        st.session_state["daily_intake_flow"] = "done"
+
+
 def _render_upload_step() -> None:
     selected_files = st.session_state.get("daily_intake_upload") or []
     with st.container(key="feed_intro"):
@@ -1168,6 +1307,63 @@ def _render_upload_step() -> None:
 
     paths = _paths()
     active = _active_records()
+    if active:
+        attention = [record for record in active if _needs_review(record)]
+        with st.container(key="feed_review_header"):
+            st.markdown("### Finish what you started")
+            waiting = len(attention) or len(active)
+            st.write(
+                f"{_count_phrase(waiting, 'invoice')} still "
+                f"{'needs' if waiting == 1 else 'need'} your decision."
+            )
+            if st.button(
+                "Continue review",
+                type="primary",
+                width="stretch",
+                key="feed_continue_review",
+            ):
+                _begin_review([
+                    record["id"] for record in (attention or active)
+                ])
+                st.rerun()
+        st.caption("Continue this review now, or add another invoice below.")
+
+    st.write("")
+    st.markdown("### Since you last checked")
+    st.caption("The latest changes supported by approved invoices and Business Memory")
+    cursor = FeedJournalCursor()
+    journal_since = st.session_state.setdefault(
+        "feed_journal_since",
+        cursor.previous_visit(),
+    )
+    try:
+        journal = BusinessStoryEngine().generate_feed(
+            StoryContext(since=journal_since),
+            max_stories=5,
+        )
+    except Exception as exc:
+        log_runtime_error("Feed Barni journal", exc)
+        st.caption(
+            "I couldn't prepare the latest business story. Your invoices are safe, "
+            "and you can still feed Barni below."
+        )
+    else:
+        for index, story in enumerate(journal):
+            render_business_story(
+                story,
+                key=f"feed_journal_{index}",
+                show_evidence=True,
+            )
+        if not st.session_state.get("feed_journal_visit_recorded"):
+            try:
+                cursor.mark_visited()
+            except OSError as exc:
+                log_runtime_error("Feed Barni visit cursor", exc)
+            else:
+                st.session_state["feed_journal_visit_recorded"] = True
+
+    st.write("")
+    st.markdown("### Feed today's invoices")
     with st.container(key="feed_upload"):
         uploaded = st.file_uploader(
             "Drop invoices here",
@@ -1182,15 +1378,6 @@ def _render_upload_step() -> None:
                 value="gpt-5.6",
                 key="daily_intake_model",
             )
-            if active:
-                st.caption(
-                    f"{_count_phrase(len(active), 'invoice')} from an earlier upload "
-                    "is still waiting."
-                )
-                if st.button("Continue pending review", key="feed_continue_review"):
-                    _begin_review([record["id"] for record in active])
-                    st.rerun()
-
         if uploaded and st.button(
             "Read invoices",
             type="primary",
@@ -1198,6 +1385,8 @@ def _render_upload_step() -> None:
             key="feed_read_invoices",
         ):
             st.session_state["daily_intake_batch_memory_before"] = business_memory_data()
+            st.session_state["daily_intake_batch_learning"] = []
+            st.session_state.pop("daily_intake_last_search", None)
             st.session_state["daily_intake_flow"] = "processing"
             st.rerun()
 
@@ -1216,17 +1405,22 @@ def _render_processing_step() -> None:
         st.caption("You can leave the details to Barni.")
 
     with st.status("Reading your invoices...", expanded=True) as status:
-        shown_stages: set[str] = set()
+        progress = st.progress(0.0, text=f"0 of {len(uploaded)} invoices complete")
+        current_file = st.empty()
         stage_labels = {
             "reading": "Reading invoices",
             "supplier": "Recognizing suppliers",
             "products": "Learning products",
+            "complete": "Invoice ready",
         }
 
-        def show_stage(stage: str) -> None:
-            if stage not in shown_stages:
-                st.write(stage_labels[stage])
-                shown_stages.add(stage)
+        def show_stage(stage: str, index: int, total: int, file_name: str) -> None:
+            completed = index if stage == "complete" else index - 1
+            progress.progress(
+                completed / total,
+                text=f"{completed} of {total} invoices complete",
+            )
+            current_file.caption(f"{stage_labels[stage]} · {file_name}")
 
         process_files(
             uploaded,
@@ -1294,8 +1488,14 @@ def _render_result_step() -> None:
         return
 
     if attention:
-        if st.button("Review now", type="primary", width="stretch"):
-            _begin_review(batch_ids)
+        clear_count = len(records) - len(attention)
+        label = (
+            f"Approve {clear_count} clear and review {len(attention)}"
+            if clear_count
+            else f"Review {_count_phrase(len(attention), 'invoice')}"
+        )
+        if st.button(label, type="primary", width="stretch"):
+            _approve_clear_and_review_attention(records)
             st.rerun()
     elif st.button("Approve & Teach Barni", type="primary", width="stretch"):
         _approve_ready_batch(records)
@@ -1365,6 +1565,24 @@ def _render_review_step() -> None:
     if notice:
         st.success(notice)
 
+    if record.get("queue_status") == "error":
+        with st.container(key="feed_error"):
+            st.markdown("### I couldn't read this invoice.")
+            st.write(_document_recovery_message(
+                Path(record.get("stored_file") or "invoice")
+            ))
+            source = Path(record.get("stored_file") or "")
+            if source.exists():
+                st.caption(
+                    "Barni kept the file in Review. Complete the details below, "
+                    "or skip it and upload a clearer copy."
+                )
+            else:
+                st.caption(
+                    "The upload could not be stored. Skip this invoice, then upload "
+                    "the original file again."
+                )
+
     with st.container(key="feed_review_header"):
         st.caption(f"Invoice {position} of {total}")
         st.markdown(
@@ -1394,7 +1612,7 @@ def _render_review_step() -> None:
             for item in queue:
                 if item["id"] == record_id:
                     item["document"] = updated_document
-                    item["queue_status"] = "ready"
+                    item["queue_status"] = _status_for(updated_document)
                     break
             _save_queue(_paths()["queue"], queue)
             st.session_state["daily_intake_notice"] = "Changes saved."
@@ -1408,12 +1626,21 @@ def _render_review_step() -> None:
         _render_duplicate_decision(record, duplicate_state)
         return
 
+    blockers = _approval_blockers(record.get("document") or {})
+    if blockers:
+        st.warning(
+            "I need " + ", ".join(blockers) +
+            " before this invoice can safely enter Business Memory."
+        )
+        st.caption("Add the missing details above and save your changes, or skip this invoice for now.")
+
     approve_col, skip_col = st.columns([1.4, 1], gap="medium")
     if approve_col.button(
         "Approve & Teach Barni",
         type="primary",
         width="stretch",
         key=f"feed_approve_{record_id}",
+        disabled=bool(blockers),
     ):
         result = _approve_record(record)
         if result["outcome"] == "duplicate":
@@ -1450,6 +1677,7 @@ def _render_done_step() -> None:
     duplicates = int(st.session_state.get("daily_intake_duplicates_found") or 0)
     with st.container(key="feed_done"):
         st.markdown("## All done.")
+        st.write("Everything that needed attention has been reviewed.")
         if delta and any(delta.values()):
             if delta["invoices"]:
                 st.write(f"✓ {_count_phrase(delta['invoices'], 'invoice')} learned")
@@ -1466,13 +1694,29 @@ def _render_done_step() -> None:
         if duplicates:
             st.caption(f"{_count_phrase(duplicates, 'duplicate')} found and resolved.")
 
-    view_col, another_col = st.columns([1.2, 1], gap="medium")
+        learning_stories = list(
+            st.session_state.get("daily_intake_batch_learning") or []
+        )
+        for index, story in enumerate(learning_stories[-3:]):
+            render_business_story(
+                story,
+                key=f"feed_batch_learning_{index}",
+                show_evidence=True,
+            )
+
+    view_col, memory_col, another_col = st.columns([1.25, 1, 1], gap="medium")
     if view_col.button(
-        "View what Barni learned",
+        "Find it in Search",
         type="primary",
         width="stretch",
     ):
         _view_what_barni_learned()
+        st.rerun()
+    if memory_col.button(
+        "Open Business Memory",
+        width="stretch",
+        on_click=_open_business_memory,
+    ):
         st.rerun()
     if another_col.button("Feed another invoice", width="stretch"):
         _reset_feed_flow()
@@ -1481,12 +1725,9 @@ def _render_done_step() -> None:
 
 def render_daily_intake():
     _render_feed_styles()
-    st.caption("SHARED INVOICE STATUS")
-    render_workflow_status(
-        invoice_workflow_snapshot(),
-        key_prefix="feed_workflow",
-    )
-    st.write("")
+    recovery = st.session_state.pop("daily_intake_recovery", None)
+    if recovery:
+        st.error(recovery)
     flow = st.session_state.get("daily_intake_flow", "upload")
     if flow == "processing":
         _render_processing_step()

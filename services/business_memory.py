@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from database import dashboard_data
+from database import connect, dashboard_data, product_price_history, search_invoices
 from services.business_identity import BusinessIdentityRepository
 from services.invoice_workflow import approved_documents
 
@@ -121,9 +121,11 @@ def business_memory_data() -> dict:
         if growth.empty:
             growth = _empty_growth()
         else:
+            # Empty event series can drop the shared index name during concat.
+            # Keep the chart contract stable even when an invoice has no items.
+            growth.index.name = "date"
             growth = growth.cumsum().reset_index().rename(
                 columns={
-                    "_learned_date": "date",
                     "invoices_new": "Invoices",
                     "suppliers_new": "Suppliers",
                     "products_new": "Products",
@@ -140,3 +142,33 @@ def business_memory_data() -> dict:
         "growth": growth,
         "recent": recent,
     }
+
+
+def supplier_memory_options() -> list[str]:
+    return [supplier.canonical_name for supplier in BusinessIdentityRepository().suppliers()]
+
+
+def supplier_memory_history(name: str) -> pd.DataFrame:
+    return search_invoices(supplier_query=name, statuses=["approved"])
+
+
+def product_memory_options() -> list[str]:
+    repository = BusinessIdentityRepository()
+    all_names = [product.canonical_name for product in repository.products()]
+    with connect() as connection:
+        rows = connection.execute(
+            """SELECT products.canonical_name
+               FROM canonical_products products
+               JOIN comparable_price_facts prices
+                 ON prices.canonical_product_id = products.id
+               JOIN business_facts facts ON facts.id = prices.fact_id
+               WHERE products.active = 1 AND facts.trust_status = 'TRUSTED'
+               GROUP BY products.id
+               ORDER BY COUNT(*) DESC, products.canonical_name COLLATE NOCASE"""
+        ).fetchall()
+    trusted_history = [row["canonical_name"] for row in rows]
+    return [*trusted_history, *(name for name in all_names if name not in set(trusted_history))]
+
+
+def product_memory_history(name: str) -> pd.DataFrame:
+    return product_price_history(name)

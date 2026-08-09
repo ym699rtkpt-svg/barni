@@ -14,6 +14,10 @@ from services.business_identity import (
     normalize_packaging,
     normalize_unit,
 )
+from services.evidence import (
+    Claim, Confidence, ConfidenceStatus, ConfidenceType, EvidenceRef,
+    LOCAL_BUSINESS_ID, invoice_line_ref,
+)
 
 
 class FactStatus:
@@ -42,6 +46,37 @@ class BusinessFact:
     evidence: Mapping[str, Any]
     payload: Mapping[str, Any]
     observed_at: str
+
+    @property
+    def evidence_refs(self) -> tuple[EvidenceRef, ...]:
+        refs = self.evidence.get("refs", ())
+        if refs:
+            return tuple(EvidenceRef.from_dict(value) for value in refs)
+        invoice_ids = self.evidence.get("invoice_ids", ())
+        item_ids = self.evidence.get("invoice_item_ids", ())
+        return tuple(invoice_line_ref(int(invoice_id), int(item_ids[index]),
+                       observed_value=self.evidence.get("observed_values"),
+                       captured_at=self.observed_at,
+                       location=str(self.evidence.get("archived_path", "")))
+                     for index, invoice_id in enumerate(invoice_ids)
+                     if index < len(item_ids))
+
+    @property
+    def claim(self) -> Claim:
+        supported = self.trust_status == FactStatus.TRUSTED
+        return Claim(
+            business_id=LOCAL_BUSINESS_ID, claim_type=self.fact_type,
+            subject_type=self.source_type, subject_id=self.source_record_id,
+            statement=self.status_explanation, evidence=self.evidence_refs,
+            confidence=Confidence(
+                ConfidenceType.FACT_TRUST,
+                ConfidenceStatus.SUPPORTED if supported else ConfidenceStatus.CONFLICT,
+                self.business_confidence, self.status_explanation,
+                components=self.confidence,
+            ),
+            producer="business_facts", producer_version="2",
+            value=dict(self.payload), metadata={"trust_status": self.trust_status},
+        )
 
 
 @dataclass(frozen=True)
@@ -107,6 +142,34 @@ class PriceComparison:
     change_amount: float | None = None
     change_pct: float | None = None
     evidence_invoice_ids: tuple[int, ...] = ()
+
+    @property
+    def evidence_refs(self) -> tuple[EvidenceRef, ...]:
+        refs = (*self.previous.fact.evidence_refs, *self.current.fact.evidence_refs)
+        seen: set[tuple[str, str, str]] = set()
+        result: list[EvidenceRef] = []
+        for ref in refs:
+            key = (ref.source_type.value, str(ref.source_id), str(ref.subrecord_id))
+            if key not in seen:
+                seen.add(key)
+                result.append(ref)
+        return tuple(result)
+
+    @property
+    def claim(self) -> Claim:
+        return Claim(
+            business_id=LOCAL_BUSINESS_ID, claim_type="price_comparison",
+            subject_type="canonical_product", subject_id=self.current.canonical_product_id or "unresolved",
+            statement=self.explanation, evidence=self.evidence_refs,
+            confidence=Confidence(
+                ConfidenceType.OBSERVATION,
+                ConfidenceStatus.SUPPORTED if self.comparable else ConfidenceStatus.CONFLICT,
+                min(self.current.fact.business_confidence, self.previous.fact.business_confidence),
+                self.explanation,
+            ), producer="comparable_price_ledger", producer_version="2",
+            value={"change_amount": self.change_amount, "change_pct": self.change_pct},
+            metadata={"status": self.status},
+        )
 
 
 class FactBuilder(Protocol):
@@ -263,6 +326,11 @@ class ComparablePriceFactBuilder:
                 "total": _number(row.get("invoice_total")),
             },
         }
+        evidence["refs"] = [invoice_line_ref(
+            invoice_id, item_id, observed_value=evidence["observed_values"],
+            field_name="unit_price", captured_at=_text(row.get("invoice_date")),
+            location=_text(row.get("archived_path")),
+        ).to_dict()]
         payload = {
             "canonical_product_id": product_id,
             "canonical_supplier_id": supplier_id,

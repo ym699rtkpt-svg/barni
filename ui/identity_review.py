@@ -86,8 +86,8 @@ def _resolve(
         else:
             service.acknowledge(candidate.id)
             message = "Understood. I’ll keep these observations separate."
-    except (ValueError, RuntimeError) as exc:
-        st.error(str(exc))
+    except (ValueError, RuntimeError):
+        st.error("I couldn't save this decision. Nothing changed. Review the evidence and try again.")
         return
     st.session_state.identity_review_message = message
     st.session_state.pop("identity_review_selected", None)
@@ -171,8 +171,8 @@ def _manual_corrections(service: IdentityReviewService) -> None:
                             identities.merge_suppliers(source, target, reason=reason or "Manually confirmed as the same supplier")
                         else:
                             identities.merge_products(source, target, reason=reason or "Manually confirmed as the same product")
-                    except ValueError as exc:
-                        st.error(str(exc))
+                    except ValueError:
+                        st.error("I couldn't merge these identities. Choose two different identities and try again.")
                     else:
                         st.success("Barni now remembers one canonical identity.")
                         st.rerun()
@@ -187,8 +187,8 @@ def _manual_corrections(service: IdentityReviewService) -> None:
                 if st.form_submit_button("⇅ Split identity"):
                     try:
                         identities.split_identity(entity_type, canonical_id, selected, new_name, reason=reason or "Evidence belongs to a separate identity")
-                    except ValueError as exc:
-                        st.error(str(exc))
+                    except ValueError:
+                        st.error("I couldn't split this identity. Select the source evidence and provide a new name.")
                     else:
                         st.success("The evidence now belongs to a separate identity.")
                         st.rerun()
@@ -199,8 +199,8 @@ def _manual_corrections(service: IdentityReviewService) -> None:
                 if st.form_submit_button("✎ Rename identity"):
                     try:
                         identities.rename_identity(entity_type, canonical_id, new_name)
-                    except ValueError as exc:
-                        st.error(str(exc))
+                    except ValueError:
+                        st.error("I couldn't rename this identity. Enter a clear name and try again.")
                     else:
                         st.success("The canonical name has been updated without changing source invoices.")
                         st.rerun()
@@ -219,8 +219,8 @@ def _decision_history(service: IdentityReviewService) -> None:
             if decision.reversible and columns[1].button("↩ Undo", key=f"undo_identity_{decision.id}"):
                 try:
                     service.undo(decision.id)
-                except ValueError as exc:
-                    st.error(str(exc))
+                except ValueError:
+                    st.error("I couldn't undo this decision. Nothing changed. Refresh the review and try again.")
                 else:
                     st.success("The previous decision was undone. No source evidence was deleted.")
                     st.rerun()

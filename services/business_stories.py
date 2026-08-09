@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Mapping, Sequence
 
 from database import connect
 from services.business_facts import ComparablePriceLedger
+from services.evidence import (
+    Claim, Confidence, ConfidenceStatus, ConfidenceType, LOCAL_BUSINESS_ID,
+    invoice_ref,
+)
 
 
 class StoryCategory:
@@ -46,6 +51,27 @@ class BusinessStory:
     evidence_values: Mapping[str, Any] = field(default_factory=dict)
     recommended_action: str | None = None
     action_target: int | str | None = None
+    occurred_at: str = ""
+    claim: Claim | None = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self.claim is not None:
+            return
+        refs = tuple(invoice_ref(value.invoice_id, captured_at=value.invoice_date,
+                                 location=value.archived_path,
+                                 metadata={"supplier": value.supplier,
+                                           "invoice_number": value.invoice_number})
+                     for value in self.evidence)
+        status = ConfidenceStatus.SUPPORTED if refs else ConfidenceStatus.INSUFFICIENT
+        object.__setattr__(self, "claim", Claim(
+            business_id=LOCAL_BUSINESS_ID, claim_type=self.story_type,
+            subject_type="invoice", subject_id=self.action_target or (refs[0].source_id if refs else "none"),
+            statement=self.description, evidence=refs,
+            confidence=Confidence(ConfidenceType.ANSWER, status, None,
+                                  "The story is derived from linked trusted records."),
+            producer="business_story_engine", producer_version="2",
+            value=dict(self.evidence_values), metadata={"category": self.category},
+        ))
 
 
 @dataclass(frozen=True)
@@ -96,6 +122,268 @@ class BusinessStoryEngine:
             return stories[:max_stories]
         return [self._quiet_story(context)] if include_quiet else []
 
+    def generate_feed(
+        self,
+        context: StoryContext | None = None,
+        *,
+        max_stories: int = 5,
+    ) -> list[BusinessStory]:
+        """Return a quiet, evidence-first journal of durable business events."""
+        context = context or StoryContext()
+        self.ledger.sync()
+        stories = [
+            *self._approved_invoice_stories(context),
+            *self._new_supplier_stories(context),
+            *self._product_repeat_stories(context),
+            *self._price_stories(context),
+            *self._historical_duplicate_stories(context),
+            *self._identity_completed_stories(context),
+        ]
+        order = {
+            "invoice_approved": 8,
+            "supplier_learned": 7,
+            "product_seen_again": 6,
+            "price_increase": 5,
+            "price_decrease": 5,
+            "duplicate_resolved": 4,
+            "identity_review_completed": 3,
+        }
+        stories.sort(
+            key=lambda story: (
+                story.occurred_at,
+                order.get(story.story_type, 0),
+                story.priority,
+            ),
+            reverse=True,
+        )
+        stories = self._deduplicate_feed(stories)
+        if stories:
+            return stories[:max_stories]
+        return [self._quiet_story(context)]
+
+    def _approved_invoice_stories(self, context: StoryContext) -> list[BusinessStory]:
+        since = _since_text(context.since)
+        clauses = ["status = 'approved'"]
+        params: list[Any] = []
+        if context.current_invoice_id:
+            clauses.append("id = ?")
+            params.append(context.current_invoice_id)
+        elif since:
+            clauses.append("datetime(COALESCE(NULLIF(approved_at, ''), created_at)) >= datetime(?)")
+            params.append(since)
+        else:
+            return []
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""SELECT id, supplier, invoice_number,
+                           COALESCE(NULLIF(approved_at, ''), created_at) AS occurred_at
+                    FROM invoices WHERE {' AND '.join(clauses)}
+                    ORDER BY datetime(occurred_at) DESC, id DESC""",
+                params,
+            ).fetchall()
+        results = []
+        for row in rows:
+            evidence = self._evidence((int(row["id"]),))
+            supplier = str(row["supplier"] or "Missing supplier")
+            number = str(row["invoice_number"] or "")
+            reference = f" Invoice #{number}" if number else ""
+            results.append(BusinessStory(
+                story_type="invoice_approved",
+                title=f"{supplier} invoice approved",
+                description=f"{supplier}{reference} was approved and added to Business Memory.",
+                category=StoryCategory.MEMORY,
+                priority=90,
+                tone="positive",
+                icon="✓",
+                evidence=evidence,
+                action_target=int(row["id"]),
+                occurred_at=str(row["occurred_at"] or ""),
+            ))
+        return results
+
+    def _new_supplier_stories(self, context: StoryContext) -> list[BusinessStory]:
+        since = _since_text(context.since)
+        if not since and not context.current_invoice_id:
+            return []
+        conditions = ["invoices.status = 'approved'"]
+        params: list[Any] = []
+        if context.current_invoice_id:
+            conditions.append("invoices.id = ?")
+            params.append(context.current_invoice_id)
+        else:
+            conditions.append(
+                "datetime(COALESCE(NULLIF(invoices.approved_at, ''), invoices.created_at)) >= datetime(?)"
+            )
+            params.append(since)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""SELECT suppliers.canonical_name, invoices.id,
+                           COALESCE(NULLIF(invoices.approved_at, ''), invoices.created_at) AS occurred_at
+                    FROM invoice_identity_links links
+                    JOIN canonical_suppliers suppliers ON suppliers.id = links.canonical_supplier_id
+                    JOIN invoices ON invoices.id = links.invoice_id
+                    WHERE {' AND '.join(conditions)}
+                      AND invoices.id = (
+                          SELECT first_invoices.id
+                          FROM invoice_identity_links first_links
+                          JOIN invoices first_invoices ON first_invoices.id = first_links.invoice_id
+                          WHERE first_links.canonical_supplier_id = links.canonical_supplier_id
+                            AND first_invoices.status = 'approved'
+                          ORDER BY datetime(COALESCE(NULLIF(first_invoices.approved_at, ''),
+                                                    first_invoices.created_at)), first_invoices.id
+                          LIMIT 1
+                      )
+                    ORDER BY datetime(occurred_at) DESC, invoices.id DESC""",
+                params,
+            ).fetchall()
+        return [BusinessStory(
+            story_type="supplier_learned",
+            title="I learned a new supplier",
+            description=f"{row['canonical_name']} is now part of Business Memory.",
+            category=StoryCategory.MEMORY,
+            priority=85,
+            tone="positive",
+            icon="＋",
+            evidence=self._evidence((int(row["id"]),)),
+            recommended_action="See it in Business Memory",
+            action_target=int(row["id"]),
+            occurred_at=str(row["occurred_at"] or ""),
+        ) for row in rows]
+
+    def _product_repeat_stories(self, context: StoryContext) -> list[BusinessStory]:
+        since = _since_text(context.since)
+        if not since and not context.current_invoice_id:
+            return []
+        scope = "invoices.id = ?" if context.current_invoice_id else (
+            "datetime(COALESCE(NULLIF(invoices.approved_at, ''), invoices.created_at)) >= datetime(?)"
+        )
+        value = context.current_invoice_id if context.current_invoice_id else since
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""SELECT products.id AS product_id, products.canonical_name,
+                           suppliers.canonical_name AS supplier_name,
+                           MAX(COALESCE(NULLIF(invoices.approved_at, ''), invoices.created_at)) AS occurred_at,
+                           COUNT(DISTINCT all_invoices.id) AS purchase_count,
+                           GROUP_CONCAT(DISTINCT all_invoices.id) AS invoice_ids
+                    FROM invoice_items items
+                    JOIN invoice_item_identity_links product_links ON product_links.item_id = items.id
+                    JOIN canonical_products products ON products.id = product_links.canonical_product_id
+                    JOIN invoices ON invoices.id = items.invoice_id
+                    JOIN invoice_identity_links supplier_links ON supplier_links.invoice_id = invoices.id
+                    JOIN canonical_suppliers suppliers ON suppliers.id = supplier_links.canonical_supplier_id
+                    JOIN invoice_item_identity_links all_product_links
+                      ON all_product_links.canonical_product_id = products.id
+                    JOIN invoice_items all_items ON all_items.id = all_product_links.item_id
+                    JOIN invoices all_invoices ON all_invoices.id = all_items.invoice_id
+                    JOIN invoice_identity_links all_supplier_links
+                      ON all_supplier_links.invoice_id = all_invoices.id
+                     AND all_supplier_links.canonical_supplier_id = suppliers.id
+                    WHERE invoices.status = 'approved' AND all_invoices.status = 'approved'
+                      AND {scope}
+                    GROUP BY products.id, suppliers.id
+                    HAVING COUNT(DISTINCT all_invoices.id) >= 2
+                    ORDER BY datetime(occurred_at) DESC, purchase_count DESC""",
+                (value,),
+            ).fetchall()
+        results = []
+        for row in rows:
+            invoice_ids = tuple(
+                int(value) for value in str(row["invoice_ids"] or "").split(",") if value
+            )
+            count = int(row["purchase_count"])
+            results.append(BusinessStory(
+                story_type="product_seen_again",
+                title="A familiar product returned",
+                description=(
+                    f"I've now seen {row['canonical_name']} from {row['supplier_name']} "
+                    f"in {count} purchases."
+                ),
+                category=StoryCategory.MEMORY,
+                priority=68,
+                tone="neutral",
+                icon="•",
+                evidence=self._evidence(invoice_ids),
+                evidence_values={"canonical_product_id": row["product_id"], "purchase_count": count},
+                occurred_at=str(row["occurred_at"] or ""),
+            ))
+        return results
+
+    def _historical_duplicate_stories(self, context: StoryContext) -> list[BusinessStory]:
+        since = _since_text(context.since)
+        if context.approval_outcome or not since:
+            return []
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT invoice_id, outcome, completed_at
+                   FROM invoice_approval_operations
+                   WHERE operation_status = 'completed'
+                     AND outcome IN ('skipped', 'replaced', 'kept_both')
+                     AND datetime(completed_at) >= datetime(?)
+                   ORDER BY datetime(completed_at) DESC""",
+                (since,),
+            ).fetchall()
+        wording = {
+            "skipped": "You kept the existing invoice, so no duplicate knowledge was added.",
+            "replaced": "You replaced the stored copy while preserving the same business record.",
+            "kept_both": "You confirmed that both invoice records should be kept.",
+        }
+        return [BusinessStory(
+            story_type="duplicate_resolved",
+            title="Duplicate reviewed",
+            description=wording[str(row["outcome"])],
+            category=StoryCategory.DUPLICATE,
+            priority=75,
+            tone="attention",
+            icon="⧉",
+            evidence=self._evidence((int(row["invoice_id"]),)) if row["invoice_id"] else (),
+            occurred_at=str(row["completed_at"] or ""),
+        ) for row in rows if row["invoice_id"]]
+
+    def _identity_completed_stories(self, context: StoryContext) -> list[BusinessStory]:
+        since = _since_text(context.since)
+        if not since:
+            return []
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT decisions.entity_type, decisions.decision_type,
+                          decisions.decided_at, decisions.evidence_json,
+                          COALESCE(suppliers.canonical_name, products.canonical_name, '') AS canonical_name
+                   FROM identity_decisions decisions
+                   LEFT JOIN canonical_suppliers suppliers
+                     ON decisions.entity_type = 'supplier' AND suppliers.id = decisions.target_canonical_id
+                   LEFT JOIN canonical_products products
+                     ON decisions.entity_type = 'product' AND products.id = decisions.target_canonical_id
+                   WHERE decisions.decision_type IN ('merge', 'rename', 'split')
+                     AND decisions.reversed_at IS NULL
+                     AND datetime(decisions.decided_at) >= datetime(?)
+                   ORDER BY datetime(decisions.decided_at) DESC""",
+                (since,),
+            ).fetchall()
+        results = []
+        for row in rows:
+            try:
+                values = json.loads(row["evidence_json"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            invoice_ids = tuple(int(value) for value in values.get("invoice_ids", ()) if value)
+            evidence = self._evidence(invoice_ids)
+            if not evidence:
+                continue
+            entity = "supplier" if row["entity_type"] == "supplier" else "product"
+            name = str(row["canonical_name"] or f"this {entity}")
+            results.append(BusinessStory(
+                story_type="identity_review_completed",
+                title="Business identity clarified",
+                description=f"I now understand {name} under one {entity} identity.",
+                category=StoryCategory.MEMORY,
+                priority=65,
+                tone="positive",
+                icon="✓",
+                evidence=evidence,
+                occurred_at=str(row["decided_at"] or ""),
+            ))
+        return results
+
     def _price_stories(self, context: StoryContext) -> list[BusinessStory]:
         facts = self._facts_in_scope(context)
         results: list[BusinessStory] = []
@@ -133,6 +421,7 @@ class BusinessStoryEngine:
                 },
                 recommended_action="Review the supporting invoices" if increased else None,
                 action_target=fact.invoice_id,
+                occurred_at=fact.observation_date,
             ))
         return results
 
@@ -164,11 +453,12 @@ class BusinessStoryEngine:
             ).fetchall()
         if not rows:
             return []
-        import json
-
         matching: list[tuple[int, ...]] = []
         for row in rows:
-            values = json.loads(row["evidence_json"] or "{}")
+            try:
+                values = json.loads(row["evidence_json"] or "{}")
+            except json.JSONDecodeError:
+                continue
             ids = tuple(int(value) for value in values.get("invoice_ids", ()) if value)
             if context.current_invoice_id and context.current_invoice_id not in ids:
                 continue
@@ -288,6 +578,23 @@ class BusinessStoryEngine:
             if key not in seen:
                 seen.add(key)
                 results.append(story)
+        return results
+
+    @staticmethod
+    def _deduplicate_feed(stories: Sequence[BusinessStory]) -> list[BusinessStory]:
+        results: list[BusinessStory] = []
+        seen: set[tuple[Any, ...]] = set()
+        for story in stories:
+            invoice_ids = tuple(source.invoice_id for source in story.evidence)
+            product_id = story.evidence_values.get("canonical_product_id")
+            key = (
+                story.story_type,
+                product_id or story.action_target or invoice_ids,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(story)
         return results
 
     def _quiet_story(self, context: StoryContext) -> BusinessStory:

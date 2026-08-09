@@ -5,6 +5,10 @@ from datetime import datetime
 import re
 from statistics import median
 from typing import Any, Iterable, Mapping, Protocol, Sequence
+from services.evidence import (
+    Claim, Confidence, ConfidenceStatus, ConfidenceType, EvidenceRef,
+    LOCAL_BUSINESS_ID, invoice_ref,
+)
 
 
 class Severity:
@@ -40,6 +44,7 @@ class Insight:
     source_record_ids: tuple[int | str, ...] = field(default_factory=tuple)
     recommended_next_action: str | None = None
     proactive: bool = field(default=False, repr=False, compare=False)
+    claim: Claim | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not self.explanation:
@@ -671,8 +676,27 @@ class InvoiceIntelligenceEngine:
                 else replace(insight, source_record_ids=(current_source,))
                 for insight in insights
             ]
+        insights = [self._with_claim(insight, context) for insight in insights]
         insights.sort(key=lambda insight: (insight.priority, insight.confidence), reverse=True)
         return insights[: self.max_insights]
+
+    @staticmethod
+    def _with_claim(insight: Insight, context: InvoiceIntelligenceContext) -> Insight:
+        if insight.claim is not None:
+            return insight
+        refs = tuple(invoice_ref(int(value)) for value in insight.source_record_ids
+                     if str(value).isdigit() and int(value) > 0)
+        status = ConfidenceStatus.SUPPORTED if refs else ConfidenceStatus.INSUFFICIENT
+        claim = Claim(
+            business_id=LOCAL_BUSINESS_ID, claim_type=insight.category,
+            subject_type="invoice", subject_id=_source_record_id(context.invoice) or "unresolved",
+            statement=insight.description, evidence=refs,
+            confidence=Confidence(ConfidenceType.OBSERVATION, status, insight.confidence,
+                                  insight.explanation),
+            producer="invoice_intelligence", producer_version="2",
+            value=dict(insight.evidence), metadata={"severity": insight.severity},
+        )
+        return replace(insight, claim=claim)
 
 
 DEFAULT_RULES: tuple[InsightRule, ...] = (

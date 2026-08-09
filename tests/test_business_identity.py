@@ -96,6 +96,14 @@ class BusinessIdentityTests(unittest.TestCase):
         self.assertEqual(evidence[1].source_record_id, "current-queue")
         self.assertIsNone(evidence[1].invoice_id)
 
+    def test_queue_identifier_cannot_overflow_invoice_evidence_lookup(self):
+        queue_id = "202608091234567890123456789"
+
+        evidence = self.repository.resolve_evidence((queue_id,))
+
+        self.assertEqual(evidence[0].source_record_id, queue_id)
+        self.assertIsNone(evidence[0].invoice_id)
+
     def test_identity_normalization_handles_hebrew_punctuation(self):
         self.assertEqual(
             normalize_identity_text('מגבוני סיון בע״מ'),

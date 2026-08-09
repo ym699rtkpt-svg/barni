@@ -15,6 +15,7 @@ from database import (
     duplicate_invoice,
     insert_invoice,
     replace_duplicate_invoice,
+    root_dir,
     search_invoices,
 )
 from knowledge_engine.engine import KnowledgeEngine
@@ -137,18 +138,23 @@ class InvoiceWorkflowSnapshot:
 
 
 def default_queue_path() -> Path:
-    return Path.home() / "restaurant-invoices" / "daily-intake" / "queue.json"
+    return root_dir() / "daily-intake" / "queue.json"
 
 
 def load_queue_records(path: Path | None = None) -> list[dict[str, Any]]:
+    """Load the active queue, recovering the last valid snapshot if necessary."""
     queue_path = path or default_queue_path()
-    if not queue_path.exists():
-        return []
-    try:
-        records = json.loads(queue_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    return records if isinstance(records, list) else []
+    backup_path = queue_path.with_suffix(queue_path.suffix + ".backup")
+    for candidate in (queue_path, backup_path):
+        if not candidate.exists():
+            continue
+        try:
+            records = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(records, list):
+            return records
+    return []
 
 
 def _text(value: Any) -> str:
@@ -582,7 +588,12 @@ class InvoiceWorkflowService:
                 invoice_id=invoice_id,
                 error=str(exc),
             )
-            return ApprovalResult(False, str(exc), "error", invoice_id)
+            return ApprovalResult(
+                False,
+                "I couldn't finish updating Business Memory. Your invoice is safe in review. Please try again.",
+                "error",
+                invoice_id,
+            )
 
     def _learn_once(self, invoice_id: int, document: Mapping[str, Any]) -> None:
         event = KnowledgeEvent(

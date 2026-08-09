@@ -4,7 +4,6 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime
 
-from ai_accountant import render_ai_accountant
 from database import dashboard_data
 from services.invoice_workflow import approved_documents, invoice_workflow_snapshot
 from services.business_stories import BusinessStoryEngine, StoryContext
@@ -213,35 +212,27 @@ def render_home():
 
     with st.container(key="home_hero"):
         hero_copy, hero_action = st.columns(
-            [1, 1], gap="medium", vertical_alignment="center"
+            [1.5, .7], gap="medium", vertical_alignment="center"
         )
         with hero_copy:
             st.caption("BARNI · YOUR BUSINESS ASSISTANT")
             st.markdown("## Welcome back")
             st.write(status_line)
         with hero_action:
-            with st.container(key="home_hero_ask"):
-                st.markdown("**Ask Barni**")
-                st.caption("Ask about invoices, suppliers or spending")
-                render_ai_accountant(
-                    compact=True,
-                    query_key="home_ask_query",
-                    input_label="Ask Barni",
-                    input_placeholder="Ask anything about your business...",
-                    helper_text="Ask in English or Hebrew.",
-                    hide_input_label=True,
-                    suggested_questions=[
-                        "What changed this week?",
-                        "Which supplier raised prices?",
-                        "Show me unusual invoices",
-                    ],
-                )
-                if st.button(
-                    "⬆ Feed Barni",
-                    key="home_hero_feed",
-                    type="primary",
-                ):
-                    _go_to("קליטה יומית")
+            if st.button(
+                "Continue invoice review"
+                if workflow.open_count
+                else "Feed Barni",
+                key="home_hero_feed",
+                type="primary",
+                width="stretch",
+            ):
+                _go_to("קליטה יומית")
+            st.caption(
+                "Finish the invoices waiting for you."
+                if workflow.open_count
+                else "Upload today's invoices."
+            )
 
     st.write("")
     st.markdown("### Invoice Workflow")

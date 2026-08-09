@@ -8,6 +8,7 @@ from services.accountant_workspace import (
     build_accountant_package,
 )
 from services.invoice_workflow import invoice_workflow_snapshot
+from services.pilot_support import log_runtime_error
 from ui.workflow_status import render_workflow_status
 
 
@@ -35,6 +36,22 @@ def _render_styles() -> None:
     )
 
 
+def _open_feed() -> None:
+    st.session_state.current_page = "קליטה יומית"
+
+
+def _prepare_accountant_package(status: dict) -> tuple[bytes | None, str]:
+    """Contain local export failures without changing invoice or workflow state."""
+    try:
+        return build_accountant_package(status), ""
+    except Exception as exc:
+        log_runtime_error("Accountant Workspace export", exc)
+        return None, (
+            "Nothing was exported and your invoices are unchanged. "
+            "Check that the source files are available, then try again."
+        )
+
+
 def render_accountant_workspace() -> None:
     _render_styles()
     with st.container(key="accountant_hero"):
@@ -59,7 +76,7 @@ def render_accountant_workspace() -> None:
         status = accountant_month_status(selected_month)
 
     st.write("")
-    st.markdown("### Selected Month")
+    st.markdown(f"### {selected_month}")
     st.caption("Package coverage for the selected accounting month")
     metrics = [
         ("Documents included", len(status["documents"])),
@@ -76,13 +93,17 @@ def render_accountant_workspace() -> None:
     st.markdown("### Readiness Check")
     with st.container(key="accountant_readiness"):
         checks = [
-            (status["duplicate"] == 0, "No duplicate invoices"),
-            (status["missing_supplier_names"] == 0, "No missing supplier names"),
-            (status["needs_review"] == 0, "No invoices awaiting review"),
-            (status["missing"] == 0, "All approved source files are available"),
+            (status["duplicate"] == 0, "No duplicate invoices in this month",
+             f"{status['duplicate']} duplicate invoice(s) need attention in this month"),
+            (status["missing_supplier_names"] == 0, "No missing supplier names",
+             f"{status['missing_supplier_names']} invoice(s) are missing supplier names"),
+            (status["needs_review"] == 0, "No dated invoices await review in this month",
+             f"{status['needs_review']} dated invoice(s) await review in this month"),
+            (status["missing"] == 0, "All approved source files are available",
+             f"{status['missing']} approved source file(s) are unavailable"),
         ]
-        for passed, label in checks:
-            st.write(f"{'✓' if passed else '•'} {label}")
+        for passed, success_label, failure_label in checks:
+            st.write(f"{'✓' if passed else '•'} {success_label if passed else failure_label}")
         if status["ready_for_accountant"]:
             st.success("✓ Ready for accountant")
         elif not len(status["documents"]):
@@ -95,21 +116,31 @@ def render_accountant_workspace() -> None:
     st.write("")
     st.markdown("### Export package")
     with st.container(key="accountant_export"):
-        st.write("The ZIP contains invoice files, Summary CSV, Summary PDF, and Metadata JSON.")
-        st.caption("The package is generated locally. Barni will not send email or transmit it.")
-        if st.button(
-            "Prepare Accountant Package",
-            type="primary",
-            width="stretch",
-            disabled=not len(status["documents"]),
-        ):
-            with st.spinner("Barni is preparing the accountant package..."):
-                st.session_state["accountant_package"] = build_accountant_package(status)
-                st.session_state["accountant_package_month"] = selected_month
+        if not len(status["documents"]):
+            st.write("There are no approved invoices to export for this month yet.")
+            st.button("Feed Barni", type="primary", width="stretch", on_click=_open_feed)
+        else:
+            st.write("The ZIP contains invoice files, Summary CSV, Summary PDF, and Metadata JSON.")
+            st.caption("The package is generated locally. Barni will not send email or transmit it.")
+            if st.button(
+                "Prepare Accountant Package",
+                type="primary",
+                width="stretch",
+            ):
+                with st.spinner("Barni is preparing the accountant package..."):
+                    package_bytes, recovery = _prepare_accountant_package(status)
+                    if package_bytes is None:
+                        st.session_state.pop("accountant_package", None)
+                        st.session_state.pop("accountant_package_month", None)
+                        st.error("I couldn't prepare the accountant package.")
+                        st.write(recovery)
+                    else:
+                        st.session_state["accountant_package"] = package_bytes
+                        st.session_state["accountant_package_month"] = selected_month
 
         package = st.session_state.get("accountant_package")
         package_month = st.session_state.get("accountant_package_month")
-        if package and package_month == selected_month:
+        if len(status["documents"]) and package and package_month == selected_month:
             st.download_button(
                 "Download Accountant Package",
                 data=package,

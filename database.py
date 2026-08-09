@@ -2,6 +2,7 @@
 from __future__ import annotations
 from knowledge_engine.line_classifier import classify_invoice_line
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -13,7 +14,12 @@ import pandas as pd
 
 
 def root_dir() -> Path:
-    root = Path.home() / "restaurant-invoices"
+    configured_root = os.environ.get("BARNI_DATA_ROOT", "").strip()
+    root = (
+        Path(configured_root).expanduser()
+        if configured_root
+        else Path.home() / "restaurant-invoices"
+    )
     root.mkdir(parents=True, exist_ok=True)
     return root
 

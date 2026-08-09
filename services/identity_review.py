@@ -13,6 +13,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from database import connect
 from services.business_identity import BusinessIdentityRepository, InvoiceEvidence, normalize_currency
+from services.evidence import EvidenceRef, invoice_ref
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,14 @@ class IdentityReviewCandidate:
     reasons: tuple[str, ...]
     evidence: tuple[InvoiceEvidence, ...]
     status: str = "pending"
+
+    @property
+    def evidence_refs(self) -> tuple[EvidenceRef, ...]:
+        return tuple(invoice_ref(value.invoice_id, captured_at=value.invoice_date,
+                                 location=value.archived_path,
+                                 metadata={"supplier": value.supplier,
+                                           "invoice_number": value.invoice_number})
+                     for value in self.evidence)
 
 
 @dataclass(frozen=True)

@@ -6,10 +6,8 @@ from ui.pilot_mode import render_pilot_mode
 from ui.accountant_workspace import render_accountant_workspace
 from ui.design_system import render_global_styles
 from ui.recipes import render_recipes
-import re
 import sqlite3
-import subprocess
-import tempfile
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -32,6 +30,8 @@ from supplier_page import render_suppliers_page
 from enhanced_dashboard import render_enhanced_dashboard
 from ai_accountant import render_ai_accountant
 from services.pilot_support import APP_VERSION, log_runtime_error
+from services.document_text import extract_document_text
+from ai_extractor import extraction_service_ready
 
 APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = APP_DIR / "data"
@@ -81,67 +81,21 @@ def get_db():
     return conn
 
 
-def run_command(args):
-    result = subprocess.run(args, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "הפקודה נכשלה")
-    return result.stdout
-
-
 def convert_pdf_to_images(pdf_path: Path) -> list[Path]:
     prefix = PREVIEW_DIR / f"{pdf_path.stem}_page"
-    run_command([
+    import subprocess
+    result = subprocess.run([
         "/opt/homebrew/bin/pdftoppm",
         "-png", "-r", "160",
         str(pdf_path), str(prefix)
-    ])
+    ], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Document preview failed")
     return sorted(PREVIEW_DIR.glob(f"{pdf_path.stem}_page-*.png"))
 
 
 def extract_text(path: Path) -> str:
-    suffix = path.suffix.lower()
-
-    if suffix == ".pdf":
-        txt_path = path.with_suffix(".txt")
-        try:
-            run_command([
-                "/opt/homebrew/bin/pdftotext",
-                "-layout", str(path), str(txt_path)
-            ])
-            text = txt_path.read_text(encoding="utf-8", errors="ignore")
-            if len(re.sub(r"\s+", "", text)) >= 40:
-                return text
-        except Exception:
-            pass
-
-        pages = convert_pdf_to_images(path)
-        texts = []
-        for page in pages:
-            with tempfile.TemporaryDirectory() as td:
-                out_base = Path(td) / "ocr"
-                run_command([
-                    "/opt/homebrew/bin/tesseract",
-                    str(page), str(out_base),
-                    "-l", "heb+eng", "--psm", "6"
-                ])
-                txt = out_base.with_suffix(".txt")
-                if txt.exists():
-                    texts.append(txt.read_text(encoding="utf-8", errors="ignore"))
-        return "\n".join(texts)
-
-    if suffix in {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"}:
-        with tempfile.TemporaryDirectory() as td:
-            out_base = Path(td) / "ocr"
-            run_command([
-                "/opt/homebrew/bin/tesseract",
-                str(path), str(out_base),
-                "-l", "heb+eng", "--psm", "6"
-            ])
-            return out_base.with_suffix(".txt").read_text(
-                encoding="utf-8", errors="ignore"
-            )
-
-    raise ValueError("סוג קובץ לא נתמך")
+    return extract_document_text(path)[0]
 
 
 from parser_engine import parse_invoice as infer_fields, extract_items
@@ -215,6 +169,36 @@ def load_invoices():
 
 st.set_page_config(page_title="Barni", page_icon="🥚", layout="wide")
 render_global_styles()
+
+
+def render_extraction_preflight() -> None:
+    if extraction_service_ready():
+        if not st.session_state.get("extraction_preflight_ready_shown"):
+            st.toast("🟢 Extraction Service Ready")
+            st.session_state["extraction_preflight_ready_shown"] = True
+        return
+
+    st.error("🔴 Extraction Service Not Configured")
+    st.markdown("## Barni needs one local setting before it can read invoices.")
+    st.write(
+        "Configure `OPENAI_API_KEY` in the same terminal, IDE, or process "
+        "environment that starts Streamlit. Then stop and restart Barni."
+    )
+    st.caption(
+        "The credential value is never displayed. Adding it after Barni has "
+        "already started will not update the running process."
+    )
+    st.code(
+        'read -s "OPENAI_API_KEY?OpenAI API key: "\n'
+        "export OPENAI_API_KEY\n"
+        "printf '\\n'\n"
+        ".venv/bin/streamlit run app.py",
+        language="bash",
+    )
+    st.stop()
+
+
+render_extraction_preflight()
 
 render_landing_page()
 
@@ -398,11 +382,6 @@ navigation_button(
     key="nav_search",
 )
 navigation_button(
-    "◫  Knowledge",
-    PAGE_KNOWLEDGE,
-    key="nav_knowledge",
-)
-navigation_button(
     "🧠  Business Memory",
     PAGE_MEMORY,
     key="nav_memory",
@@ -413,44 +392,38 @@ navigation_button(
     key="nav_insights",
 )
 navigation_button(
-    "🍽️  Recipes",
-    PAGE_RECIPES,
-    key="nav_recipes",
-)
-navigation_button(
     "▣  Accountant Workspace",
     PAGE_ACCOUNTANT,
     key="nav_accountant",
-)
-navigation_button(
-    "◇  Pilot Dashboard",
-    PAGE_PILOT,
-    key="nav_pilot",
 )
 st.sidebar.markdown(
     '<div class="barni-divider"></div>',
     unsafe_allow_html=True,
 )
 
-with st.sidebar.expander("Internal tools"):
-    developer_pages = {
-        "בדיקת מאגר": "בדיקת מאגר",
-        "חילוץ AI": "חילוץ AI",
-        "הגירת מאגר": "הגירת מאגר",
-        "סגירת חודש": "סגירת חודש",
-        "בריאות מסד": "בריאות מסד",
-        "העלאה ישנה": "העלאת חשבונית",
-        "ארכיון ישן": "ארכיון",
-    }
+if os.environ.get("BARNI_INTERNAL_TOOLS") == "1":
+    with st.sidebar.expander("Internal tools"):
+        developer_pages = {
+            "Pilot Dashboard": PAGE_PILOT,
+            "Legacy Knowledge": PAGE_KNOWLEDGE,
+            "Recipes preview": PAGE_RECIPES,
+            "בדיקת מאגר": "בדיקת מאגר",
+            "חילוץ AI": "חילוץ AI",
+            "הגירת מאגר": "הגירת מאגר",
+            "סגירת חודש": "סגירת חודש",
+            "בריאות מסד": "בריאות מסד",
+            "העלאה ישנה": "העלאת חשבונית",
+            "ארכיון ישן": "ארכיון",
+        }
 
-    for label, target in developer_pages.items():
-        if st.button(
-            label,
-            key=f"developer_{target}",
-            width="stretch",
-        ):
-            st.session_state.current_page = target
-            st.rerun()
+        for label, target in developer_pages.items():
+            if st.button(
+                label,
+                key=f"developer_{target}",
+                width="stretch",
+            ):
+                st.session_state.current_page = target
+                st.rerun()
 
 st.sidebar.markdown(
     f'<div class="barni-version">Barni · {APP_VERSION}</div>',
@@ -465,7 +438,60 @@ def render_page_safely(page_name: str, renderer) -> None:
         renderer()
     except Exception as exc:
         log_runtime_error(page_name, exc)
-        st.error("Barni ran into a problem on this page. The details were logged for review.")
+        recovery = {
+            PAGE_HOME: (
+                "I couldn't prepare today's summary.",
+                "Your invoices are safe. You can continue directly to Feed Barni.",
+                PAGE_FEED,
+                "Open Feed Barni",
+            ),
+            PAGE_FEED: (
+                "I couldn't open this invoice review.",
+                "Nothing was lost. Try opening Feed Barni again.",
+                PAGE_FEED,
+                "Try again",
+            ),
+            PAGE_SEARCH: (
+                "I couldn't search Business Memory just now.",
+                "Your saved invoices are safe. Try the search again.",
+                PAGE_SEARCH,
+                "Try again",
+            ),
+            PAGE_MEMORY: (
+                "I couldn't open Business Memory just now.",
+                "The information Barni learned is still stored safely.",
+                PAGE_MEMORY,
+                "Try again",
+            ),
+            PAGE_INSIGHTS: (
+                "I couldn't prepare your insights just now.",
+                "No conclusion was shown without its supporting information.",
+                PAGE_INSIGHTS,
+                "Try again",
+            ),
+            PAGE_ACCOUNTANT: (
+                "I couldn't prepare the accountant workspace.",
+                "No files were changed or sent. Try opening it again.",
+                PAGE_ACCOUNTANT,
+                "Try again",
+            ),
+            PAGE_IDENTITY_REVIEW: (
+                "I couldn't open Identity Review just now.",
+                "No identity decision was changed. Barni will keep the question waiting safely.",
+                PAGE_IDENTITY_REVIEW,
+                "Try again",
+            ),
+        }.get(page_name, (
+            "I couldn't open this page.",
+            "Nothing was changed. Return Home and try again.",
+            PAGE_HOME,
+            "Return Home",
+        ))
+        st.markdown(f"## {recovery[0]}")
+        st.write(recovery[1])
+        if st.button(recovery[3], type="primary", key=f"recover_{page_name}"):
+            st.session_state.current_page = recovery[2]
+            st.rerun()
 
 
 if page == PAGE_HOME:
@@ -512,7 +538,8 @@ if page == "העלאת חשבונית":
                 )
             except Exception as exc:
                 log_runtime_error("העלאת חשבונית", exc)
-                st.error(f"שגיאה בעיבוד החשבונית: {exc}")
+                st.error("לא הצלחתי לקרוא את החשבונית.")
+                st.write("הקובץ לא נוסף לזיכרון העסקי. נסו עותק ברור יותר או חזרו ל-Feed Barni.")
                 st.stop()
 
         left, right = st.columns([1.2, 1], gap="large")

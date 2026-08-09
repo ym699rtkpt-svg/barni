@@ -3,7 +3,10 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from services.business_memory import business_memory_data
+from services.business_memory import (
+    business_memory_data, product_memory_history, product_memory_options,
+    supplier_memory_history, supplier_memory_options,
+)
 from services.business_identity import BusinessIdentityRepository
 from services.identity_review import IdentityReviewService
 
@@ -60,6 +63,76 @@ def _display_date(value) -> str:
     return parsed.strftime("%d %b %Y") if pd.notna(parsed) else "Date unavailable"
 
 
+def _open_invoice(invoice_id: int) -> None:
+    st.session_state.search_selected_kind = "invoice"
+    st.session_state.search_selected_value = int(invoice_id)
+    st.session_state.search_show_document = False
+    st.session_state.current_page = "חיפוש חשבוניות"
+
+
+def _open_accountant_workspace() -> None:
+    st.session_state.current_page = "Accountant Workspace"
+
+
+def _open_feed() -> None:
+    st.session_state.current_page = "קליטה יומית"
+
+
+def _render_memory_drill_down() -> None:
+    st.markdown("### Explore Business Memory")
+    st.caption("Open the history behind Barni's suppliers, products and prices.")
+    supplier_tab, product_tab = st.tabs(["Supplier history", "Product & price history"])
+
+    with supplier_tab:
+        supplier_names = supplier_memory_options()
+        if not supplier_names:
+            st.caption("No supplier history yet.")
+        else:
+            selected_supplier = st.selectbox("Supplier", supplier_names, key="memory_supplier")
+            history = supplier_memory_history(selected_supplier)
+            if history.empty:
+                st.caption("No approved invoices are connected to this supplier yet.")
+            for _, invoice in history.head(10).iterrows():
+                number = str(invoice.get("invoice_number") or "No invoice number")
+                total = invoice.get("total")
+                total_text = f"₪{float(total):,.2f}" if pd.notna(total) else "Unknown amount"
+                st.button(
+                    f"{_display_date(invoice.get('invoice_date'))} · {number} · {total_text}",
+                    key=f"memory_supplier_invoice_{int(invoice['id'])}",
+                    on_click=_open_invoice,
+                    args=(int(invoice["id"]),),
+                )
+
+    with product_tab:
+        product_names = product_memory_options()
+        if not product_names:
+            st.caption("No product history yet.")
+        else:
+            selected_product = st.selectbox("Product", product_names, key="memory_product")
+            history = product_memory_history(selected_product)
+            if history.empty:
+                st.caption("This product does not have a comparable price history yet.")
+            else:
+                visible = history.head(12)
+                st.dataframe(
+                    visible[["invoice_date", "supplier", "unit_price", "quantity"]],
+                    hide_index=True,
+                    width="stretch",
+                    column_config={
+                        "invoice_date": "Date", "supplier": "Supplier",
+                        "unit_price": st.column_config.NumberColumn("Price", format="₪%.2f"),
+                        "quantity": "Quantity",
+                    },
+                )
+                for invoice_id in visible["invoice_id"].dropna().astype(int).drop_duplicates():
+                    st.button(
+                        f"Open source invoice #{invoice_id}",
+                        key=f"memory_product_invoice_{invoice_id}",
+                        on_click=_open_invoice,
+                        args=(invoice_id,),
+                    )
+
+
 def _render_identity_trust() -> None:
     repository = BusinessIdentityRepository()
     health = repository.identity_health()
@@ -68,7 +141,7 @@ def _render_identity_trust() -> None:
     st.markdown("### What Barni needs help learning")
     if review_count:
         st.write(f"I found {review_count} identity question{'s' if review_count != 1 else ''} where your answer would make future comparisons more trustworthy.")
-        if st.button("Help Barni learn", type="primary", key="open_identity_review"):
+        if st.button("Help Barni learn", key="open_identity_review"):
             st.session_state.current_page = "Identity Review"
             st.rerun()
     else:
@@ -102,9 +175,6 @@ def render_business_memory() -> None:
         st.write(memory_status)
 
     st.write("")
-    _render_identity_trust()
-
-    st.write("")
     st.markdown("### What Barni knows")
     st.caption("Knowledge stored from approved business documents")
     metrics = [
@@ -128,6 +198,9 @@ def render_business_memory() -> None:
                 caption,
                 key=f"memory_metric_{index}",
             )
+
+    st.write("")
+    _render_memory_drill_down()
 
     st.write("")
     st.markdown("### Learning progress")
@@ -197,3 +270,17 @@ def render_business_memory() -> None:
                     )
                 with columns[1]:
                     st.caption(_display_date(invoice.get("_learned_at")))
+
+    st.write("")
+    _render_identity_trust()
+
+    st.write("")
+    destination_label = "Prepare for accountant" if invoice_count else "Feed Barni"
+    if st.button(
+        destination_label,
+        type="primary",
+        width="stretch",
+        key="memory_to_accountant",
+        on_click=_open_accountant_workspace if invoice_count else _open_feed,
+    ):
+        st.rerun()

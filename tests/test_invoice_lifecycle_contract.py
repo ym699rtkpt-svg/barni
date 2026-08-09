@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import json
+import io
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
 import database
 from database import connect, init_database, search_invoices
 from knowledge_engine.repository import KnowledgeRepository
-from services.accountant_workspace import accountant_month_status
+from services.accountant_workspace import accountant_month_status, build_accountant_package
 from services.business_memory import business_memory_data
+from services.business_stories import BusinessStoryEngine, StoryContext
+from services.evidence import source_invoice_id
 from services.invoice_workflow import (
     ApprovalState,
     DuplicateState,
@@ -113,6 +117,36 @@ class TrustedInvoiceLifecycleContractTests(unittest.TestCase):
         self.assertEqual(memory["invoice_count"], 1)
         self.assertEqual(memory["supplier_count"], 1)
         self.assertEqual(memory["product_count"], 1)
+        self.assertEqual(memory["recent"]["id"].tolist(), [result.invoice_id])
+
+        stories = BusinessStoryEngine().generate(
+            StoryContext(
+                current_invoice_id=result.invoice_id,
+                approval_outcome=result.outcome,
+                memory_delta={
+                    "invoices": 1,
+                    "suppliers": 1,
+                    "products": 1,
+                    "price_points": 1,
+                },
+            ),
+            max_stories=3,
+        )
+        self.assertTrue(stories)
+        self.assertTrue(any(
+            source_invoice_id(ref) == result.invoice_id
+            for story in stories
+            for ref in (story.claim.evidence if story.claim else ())
+        ))
+        insight_stories = BusinessStoryEngine().generate(
+            StoryContext(since="2026-08-09T00:00:00"),
+            max_stories=3,
+        )
+        self.assertTrue(any(
+            source_invoice_id(ref) == result.invoice_id
+            for story in insight_stories
+            for ref in (story.claim.evidence if story.claim else ())
+        ))
 
         supplier_memory = KnowledgeRepository().get_supplier_memory("vat-1")
         self.assertIsNotNone(supplier_memory)
@@ -131,6 +165,11 @@ class TrustedInvoiceLifecycleContractTests(unittest.TestCase):
         self.assertEqual(accountant["needs_review"], 0)
         self.assertEqual(accountant["ready"], 1)
         self.assertTrue(accountant["ready_for_accountant"])
+        package = zipfile.ZipFile(io.BytesIO(build_accountant_package(accountant)))
+        self.assertIn("summary.csv", package.namelist())
+        self.assertIn("summary.pdf", package.namelist())
+        self.assertIn("metadata.json", package.namelist())
+        self.assertTrue(any(name.startswith("invoices/") for name in package.namelist()))
 
     def test_approval_retry_and_rerun_do_not_relearn_or_double_count(self):
         document = self._document()
@@ -198,6 +237,8 @@ class TrustedInvoiceLifecycleContractTests(unittest.TestCase):
 
         self.assertFalse(interrupted.success)
         self.assertEqual(interrupted.outcome, "error")
+        self.assertIn("Your invoice is safe in review", interrupted.message)
+        self.assertNotIn("simulated", interrupted.message)
         self.assertEqual(len(search_invoices(statuses=["approved"])), 1)
 
         resumed = InvoiceWorkflowService().approve(record, document)
@@ -232,6 +273,19 @@ class TrustedInvoiceLifecycleContractTests(unittest.TestCase):
         snapshot = build_workflow_snapshot(documents, [])
         self.assertEqual(snapshot.approved, 2)
         self.assertEqual(snapshot.duplicate, 0)
+
+    def test_business_memory_growth_keeps_date_for_invoice_without_products(self):
+        document = self._document(number="receipt-1")
+        document["document_type"] = "receipt"
+        document["items"] = []
+        record = self._record("receipt-queue", document)
+
+        result = InvoiceWorkflowService().approve(record, document)
+
+        self.assertTrue(result.success)
+        growth = business_memory_data()["growth"]
+        self.assertFalse(growth.empty)
+        self.assertIn("date", growth.columns)
 
 
 if __name__ == "__main__":

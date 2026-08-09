@@ -105,6 +105,19 @@ def value_before_label(rows: list[str], labels: list[str]):
     return None
 
 
+def vat_value(rows: list[str]):
+    """Read the VAT amount without matching subtotal labels such as 'before VAT'."""
+    for row in rows:
+        if 'מע"מ' not in row:
+            continue
+        if any(phrase in row for phrase in ('לפני מע"מ', 'כולל מע"מ', 'חייב מע"מ')):
+            continue
+        values = re.findall(r"-?\d{1,3}(?:,\d{3})*(?:\.\d{2})", row)
+        if values:
+            return amount(values[0])
+    return None
+
+
 def classify_document(text: str) -> str:
     joined = "\n".join(lines(text))
 
@@ -149,6 +162,20 @@ def identify_supplier(joined: str) -> tuple[str, str]:
         if token in joined:
             return name, supplier_id
 
+    # Most Hebrew invoices place the issuer and its VAT ID before the recipient
+    # block. Restrict the fallback to that header so a customer is never learned
+    # as the supplier merely because its ID also appears on the invoice.
+    header = joined.split("לכבוד", 1)[0]
+    header_rows = header.splitlines()
+    vat_id = first_match(header, [r"(?:ע\.?מ\.?|ח\.?פ\.?)\s*[:.]?\s*(\d{9})"])
+    if vat_id:
+        for row in header_rows:
+            candidate = row.strip(" .:-")
+            if not candidate or vat_id in candidate or "מספר" in candidate:
+                continue
+            if re.search(r"[א-תA-Za-z]", candidate):
+                return candidate, vat_id
+
     return "", ""
 
 
@@ -160,6 +187,7 @@ def parse_invoice(text: str) -> dict:
     supplier, supplier_id = identify_supplier(joined)
 
     invoice_number = first_match(joined, [
+        r"חשבונית מס\s+([0-9]+\s*/\s*[0-9]+)",
         r"חשבונית מס מספר\s+(\d+)",
         r"חשבונית מס\s*\)מקור\(\s*\n(\d+)",
         r"חשבונית מס/קבלה\s+מס\.?\s*(\d+)",
@@ -170,6 +198,7 @@ def parse_invoice(text: str) -> dict:
         r"מספר תעודה\s*:?\s*([A-Z0-9]+)",
         r"חשבונית מס\s+([A-Z]{1,3}\d{6,})",
     ])
+    invoice_number = re.sub(r"\s*/\s*", "/", invoice_number)
 
     invoice_date = ""
 
@@ -192,6 +221,7 @@ def parse_invoice(text: str) -> dict:
                     break
     else:
         invoice_date = normalize_date(first_match(joined, [
+            r"([0-3]?\d[./\\-][01]?\d[./\\-](?:20)?\d{2})\s+תאריך\s*:",
             r"תאריך חשבונית\s*:?\s*([0-3]?\d[./\\-][01]?\d[./\\-](?:20)?\d{2})",
             r"([0-3]?\d[./\\-][01]?\d[./\\-](?:20)?\d{2})\s+חשבונית מס מספר",
             r"חשבונית מס מספר\s+\d+\s+([0-3]?\d[./\\-][01]?\d[./\\-](?:20)?\d{2})",
@@ -239,7 +269,7 @@ def parse_invoice(text: str) -> dict:
             'סה"כ אחרי עיגול',
             'מחיר כולל',
         ])
-        vat = value_before_label(rows, ['מע"מ', 'סכום המע"מ'])
+        vat = vat_value(rows)
         total = value_before_label(rows, [
             'סה"כ לתשלום',
             'סה"כ כולל מע"מ',
@@ -286,6 +316,39 @@ def extract_items(text: str) -> list[dict]:
     rows = lines(text)
     joined = "\n".join(rows)
     results = []
+
+    # Common SAP layout: line total, unit price, quantity, description, code,
+    # row number. Some descriptive lines intentionally contain no price.
+    if "programname:SAP" in joined:
+        priced = re.compile(
+            r"^(-?\d{1,3}(?:,\d{3})*\.\d{2})\s+₪\s+"
+            r"(-?\d{1,3}(?:,\d{3})*\.\d{2})\s+₪\s+"
+            r"(-?\d+(?:\.\d+)?)\s+(.+?)\s+(\d+)\s+\d+$"
+        )
+        descriptive = re.compile(
+            r"^(-?\d+(?:\.\d+)?)\s+(.+?)\s+(\d+)\s+\d+$"
+        )
+        active = False
+        for row_text in rows:
+            if "קוד פריט" in row_text and "תיאור" in row_text:
+                active = True
+                continue
+            if active and 'סה"כ לפני מע"מ' in row_text:
+                break
+            if not active:
+                continue
+            match = priced.match(row_text)
+            if match:
+                line_total, unit_price, quantity, description, code = match.groups()
+                results.append(
+                    _row(code, description, quantity, amount(unit_price), amount(line_total))
+                )
+                continue
+            match = descriptive.match(row_text)
+            if match:
+                quantity, description, code = match.groups()
+                results.append(_row(code, description, quantity, 0.0, 0.0))
+        return results
 
     # Simple Freelance layout.
     if "בבאיי משה" in joined:

@@ -5,10 +5,14 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-from categorizer import classify_all
 from services.business_stories import BusinessStoryEngine, StoryContext
 from services.invoice_workflow import approved_documents, invoice_workflow_snapshot
+from services.business_identity import BusinessIdentityRepository
 from ui.business_story import render_business_stories
+
+
+def _open_feed() -> None:
+    st.session_state.current_page = "קליטה יומית"
 
 
 def _render_styles() -> None:
@@ -42,11 +46,7 @@ def render_control_center() -> dict:
         if not documents.empty and "vat" in documents.columns
         else 0.0
     )
-    supplier_count = (
-        int(documents["supplier"].replace("", None).dropna().nunique())
-        if not documents.empty and "supplier" in documents.columns
-        else 0
-    )
+    supplier_count = BusinessIdentityRepository().identity_health()["suppliers"]
     data = {
         "invoice_count": len(documents),
         "supplier_count": supplier_count,
@@ -105,6 +105,7 @@ def render_enhanced_dashboard() -> None:
             '<div class="barni-empty-state">No approved invoices yet. Feed Barni an invoice to start seeing purchasing patterns.</div>',
             unsafe_allow_html=True,
         )
+        st.button("Feed Barni", type="primary", on_click=_open_feed)
         return
 
     st.write("")
@@ -140,11 +141,3 @@ def render_enhanced_dashboard() -> None:
             st.caption("No document types are available yet.")
         else:
             st.dataframe(document_types, hide_index=True, width="stretch")
-
-    with st.expander("Internal maintenance"):
-        st.caption("Use only when reviewing invoice categorization during the pilot.")
-        if st.button("Refresh expense categories", width="stretch"):
-            with st.spinner("Barni is reviewing categories..."):
-                result = classify_all()
-            st.success(f"Reviewed {result['processed']} documents.")
-            st.rerun()

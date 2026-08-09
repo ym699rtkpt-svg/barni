@@ -877,12 +877,20 @@ class BusinessIdentityRepository:
         self,
         source_record_ids: Sequence[int | str],
     ) -> tuple[InvoiceEvidence, ...]:
+        sqlite_integer_max = (2 ** 63) - 1
+
+        def stored_invoice_id(value: int | str) -> int | None:
+            try:
+                numeric = int(value)
+            except (TypeError, ValueError):
+                return None
+            return numeric if 0 < numeric <= sqlite_integer_max else None
+
         numeric_ids = []
         for value in source_record_ids:
-            try:
-                numeric_ids.append(int(value))
-            except (TypeError, ValueError):
-                continue
+            numeric = stored_invoice_id(value)
+            if numeric is not None:
+                numeric_ids.append(numeric)
         stored: dict[int, sqlite3.Row] = {}
         if numeric_ids:
             placeholders = ",".join("?" for _ in numeric_ids)
@@ -902,9 +910,8 @@ class BusinessIdentityRepository:
                 stored = {int(row["id"]): row for row in rows}
         evidence = []
         for source_id in source_record_ids:
-            try:
-                numeric = int(source_id)
-            except (TypeError, ValueError):
+            numeric = stored_invoice_id(source_id)
+            if numeric is None:
                 evidence.append(
                     InvoiceEvidence(source_id, None, "Current invoice", "", "", None, "", "")
                 )

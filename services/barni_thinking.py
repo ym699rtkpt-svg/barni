@@ -12,6 +12,7 @@ from services.invoice_intelligence import (
 )
 from services.invoice_intelligence_adapter import analyze_invoice_record
 from services.business_identity import BusinessIdentityRepository, InvoiceEvidence
+from services.evidence import source_invoice_id
 
 
 @dataclass(frozen=True)
@@ -321,10 +322,15 @@ def think_about_invoice(
     }
 
     def sources_for(insight: Insight) -> tuple[InvoiceEvidence, ...]:
+        source_ids = tuple(
+            value for value in (
+                source_invoice_id(ref) for ref in (insight.claim.evidence if insight.claim else ())
+            ) if value is not None
+        ) or insight.source_record_ids
         if invoices is None:
-            return identities.resolve_evidence(insight.source_record_ids)
+            return identities.resolve_evidence(source_ids)
         sources = []
-        for source_id in insight.source_record_ids:
+        for source_id in source_ids:
             try:
                 record = evidence_records.get(int(source_id))
             except (TypeError, ValueError):
@@ -350,7 +356,7 @@ def think_about_invoice(
             sources=sources_for(insight),
         )
         for insight in _surfaced_observation_insights(insights)
-        if insight.source_record_ids
+        if insight.claim and insight.claim.evidence
     )
     needs_attention = any(section.tone == "attention" for section in sections)
     summary = (

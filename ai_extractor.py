@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Mapping
 
 from openai import OpenAI
 from pydantic import BaseModel, Field
@@ -24,6 +24,14 @@ DocumentType = Literal[
     "דרישת תשלום",
     "אחר",
 ]
+
+
+def extraction_service_ready(
+    environment: Mapping[str, str] | None = None,
+) -> bool:
+    """Return credential availability without reading or exposing its value."""
+    source = os.environ if environment is None else environment
+    return bool(str(source.get("OPENAI_API_KEY", "")).strip())
 
 
 class InvoiceItem(BaseModel):
@@ -208,7 +216,7 @@ def extract_with_ai(
     model: str | None = None,
     max_pages: int = 6,
 ) -> tuple[dict, str]:
-    if not os.environ.get("OPENAI_API_KEY"):
+    if not extraction_service_ready():
         raise RuntimeError(
             "חסר OPENAI_API_KEY. יש להגדיר מפתח API לפני הפעלת מנוע ה-AI."
         )

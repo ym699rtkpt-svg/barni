@@ -60,6 +60,9 @@ def _render_landing_styles() -> None:
             color: #738078;
             font-size: 1rem;
         }
+        .st-key-barni_enter {
+            margin-inline: auto;
+        }
         .st-key-barni_enter button {
             width: 180px;
             min-height: 48px;

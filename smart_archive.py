@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from services.business_identity import BusinessIdentityRepository
 
 from services.barni_thinking import think_about_invoice
 from services.invoice_workflow import (
@@ -33,6 +34,15 @@ DOCUMENT_TYPES = [
     "חשבונית מס", "חשבונית מס/קבלה", "קבלה", "חשבונית זיכוי",
     "תעודת משלוח", "ריכוז חשבון", "דרישת תשלום", "אחר",
 ]
+
+
+def _memory_suggestions(product_names: list[str], supplier_names: list[str]) -> list[str]:
+    values = [
+        str(value).strip()
+        for value in [*product_names, *supplier_names]
+        if str(value).strip() and len(str(value).strip()) <= 36
+    ]
+    return list(dict.fromkeys(values))[:6]
 
 
 def _render_search_styles() -> None:
@@ -309,6 +319,10 @@ def _money(value: object) -> str:
     return "Unknown amount" if pd.isna(amount) else f"₪{float(amount):,.2f}"
 
 
+def _count_phrase(count: int, singular: str) -> str:
+    return f"{count} {singular if count == 1 else singular + 's'}"
+
+
 def _display_date(value: object) -> str:
     parsed = pd.to_datetime(value, errors="coerce")
     return str(value or "Unknown date") if pd.isna(parsed) else parsed.strftime("%d %b %Y")
@@ -356,6 +370,10 @@ def _clear_selection() -> None:
     st.session_state.search_selected_kind = None
     st.session_state.search_selected_value = None
     st.session_state.search_show_document = False
+
+
+def _open_business_memory() -> None:
+    st.session_state.current_page = "Business Memory"
 
 
 def _apply_search_suggestion(query: str) -> None:
@@ -439,9 +457,10 @@ def _matching_products(results: pd.DataFrame, query: str) -> list[dict]:
         for _, item in invoice_items(int(invoice["id"])).iterrows():
             description = str(item.get("description") or "").strip()
             code = str(item.get("item_code") or "").strip()
-            if needle not in description.casefold() and needle not in code.casefold():
+            canonical_name = str(item.get("canonical_product_name") or "").strip()
+            if not any(needle in value.casefold() for value in (description, code, canonical_name)):
                 continue
-            matches.setdefault(description or code or "Product", []).append(
+            matches.setdefault(canonical_name or description or code or "Product", []).append(
                 {**item.to_dict(), "invoice": invoice.to_dict()}
             )
 
@@ -542,13 +561,19 @@ def _render_document_viewer(
         st.info("The original document is not available to preview.")
         return
     if path.suffix.lower() == ".pdf":
-        st.download_button("Download PDF", path.read_bytes(), path.name, "application/pdf")
         try:
-            st.pdf(path.read_bytes(), height=height)
-        except Exception as exc:
-            st.info("The original document could not be previewed here.")
-            with st.expander("Technical details"):
-                st.code(str(exc))
+            source_bytes = path.read_bytes()
+        except OSError:
+            st.info(
+                "I couldn't open the original PDF. The saved invoice details are still "
+                "available; return to the results or try opening it again."
+            )
+            return
+        st.download_button("Download PDF", source_bytes, path.name, "application/pdf")
+        try:
+            st.pdf(source_bytes, height=height)
+        except Exception:
+            st.info("I couldn't show the PDF preview here. Use Download PDF to open the original invoice.")
     else:
         st.image(str(path), width="stretch")
 
@@ -705,10 +730,10 @@ def render_database_archive() -> None:
     if not query:
         with st.container(key="search_suggestions"):
             st.caption("Suggested searches")
-            suggestions = [
-                "Milk", "July invoices", "Price increases",
-                "Kitchenware", "Tomatoes", "Tnuva",
-            ]
+            identities = BusinessIdentityRepository()
+            product_names = [value.canonical_name for value in identities.products()]
+            supplier_names = suppliers()
+            suggestions = _memory_suggestions(product_names, supplier_names)
             suggestion_columns = st.columns(3)
             for index, suggestion in enumerate(suggestions):
                 suggestion_columns[index % 3].button(
@@ -767,6 +792,12 @@ def render_database_archive() -> None:
         with st.container(key="recent_result_stack"):
             for _, invoice in recent.iterrows():
                 _recent_invoice_card(invoice)
+        if not recent.empty:
+            st.button(
+                "Open Business Memory",
+                key="search_to_memory_default",
+                on_click=_open_business_memory,
+            )
         return
 
     all_invoices = search_invoices(statuses=[])
@@ -804,10 +835,10 @@ def render_database_archive() -> None:
     if supplier_matches:
         _section_label("SUPPLIERS")
         for index, name in enumerate(supplier_matches[:8]):
-            supplier_invoices = results[results["supplier"] == name]
+            supplier_invoices = search_invoices(supplier_query=name, statuses=statuses)
             _result_card(
                 f"supplier_{index}", name,
-                [f"{len(supplier_invoices)} invoices",
+                [_count_phrase(len(supplier_invoices), "invoice"),
                  f"Last purchase: {_display_date(supplier_invoices['invoice_date'].max())}"],
                 "supplier", name,
             )
@@ -868,3 +899,9 @@ def render_database_archive() -> None:
         if product:
             st.write("")
             _render_product_detail(product)
+
+    st.button(
+        "Open Business Memory",
+        key="search_to_memory_results",
+        on_click=_open_business_memory,
+    )
