@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pandas as pd
 import streamlit as st
 
 from categorizer import classify_all
-from database import category_summary, control_center_data, dashboard_data
 from services.business_stories import BusinessStoryEngine, StoryContext
+from services.invoice_workflow import approved_documents, invoice_workflow_snapshot
 from ui.business_story import render_business_stories
 
 
@@ -34,7 +35,24 @@ def _render_styles() -> None:
 
 
 def render_control_center() -> dict:
-    data = control_center_data()
+    documents = approved_documents()
+    workflow = invoice_workflow_snapshot()
+    total_vat = (
+        float(documents["vat"].fillna(0).sum())
+        if not documents.empty and "vat" in documents.columns
+        else 0.0
+    )
+    supplier_count = (
+        int(documents["supplier"].replace("", None).dropna().nunique())
+        if not documents.empty and "supplier" in documents.columns
+        else 0
+    )
+    data = {
+        "invoice_count": len(documents),
+        "supplier_count": supplier_count,
+        "vat_total": total_vat,
+        "review_count": workflow.needs_attention,
+    }
     st.markdown("### Supporting overview")
     st.caption("Context behind Barni's stories")
     metrics = [
@@ -64,9 +82,22 @@ def render_enhanced_dashboard() -> None:
     st.write("")
     render_business_stories(stories, key_prefix="insights_story")
     st.write("")
-    control = render_control_center()
-    data = dashboard_data()
-    documents = data["documents"]
+    render_control_center()
+    documents = approved_documents()
+    if documents.empty:
+        monthly = pd.DataFrame(columns=["month", "total"])
+        supplier_spend = pd.DataFrame(columns=["supplier", "total"])
+        document_types = pd.DataFrame(columns=["document_type", "count"])
+        categories = pd.DataFrame(columns=["category", "subcategory", "documents_count", "total"])
+    else:
+        documents = documents.copy()
+        documents["total"] = pd.to_numeric(documents["total"], errors="coerce")
+        documents["_date"] = pd.to_datetime(documents["invoice_date"], errors="coerce")
+        documents["month"] = documents["_date"].dt.to_period("M").astype(str)
+        monthly = documents.groupby("month")["total"].sum().reset_index().sort_values("month")
+        supplier_spend = documents.groupby("supplier")["total"].sum().sort_values(ascending=False).reset_index().head(10)
+        document_types = documents["document_type"].replace("", "Not identified").value_counts().rename_axis("document_type").reset_index(name="count")
+        categories = documents.groupby(["category", "subcategory"], dropna=False)["total"].agg(documents_count="count", total="sum").reset_index().sort_values("total", ascending=False)
 
     if documents.empty:
         st.write("")
@@ -79,8 +110,6 @@ def render_enhanced_dashboard() -> None:
     st.write("")
     st.markdown("### Purchasing activity")
     st.caption("Spend patterns from approved invoices")
-    monthly = data["monthly_spend"]
-    supplier_spend = data["supplier_spend"].head(10)
     left, right = st.columns(2, gap="large")
     with left:
         with st.container(key="insights_chart_monthly"):
@@ -100,7 +129,6 @@ def render_enhanced_dashboard() -> None:
     st.write("")
     st.markdown("### More detail")
     st.caption("Supporting breakdowns for deeper review")
-    categories = category_summary()
     category_tab, document_tab = st.tabs(["Categories", "Document types"])
     with category_tab:
         if categories.empty:
@@ -108,10 +136,10 @@ def render_enhanced_dashboard() -> None:
         else:
             st.dataframe(categories, hide_index=True, width="stretch")
     with document_tab:
-        if data["document_types"].empty:
+        if document_types.empty:
             st.caption("No document types are available yet.")
         else:
-            st.dataframe(data["document_types"], hide_index=True, width="stretch")
+            st.dataframe(document_types, hide_index=True, width="stretch")
 
     with st.expander("Internal maintenance"):
         st.caption("Use only when reviewing invoice categorization during the pilot.")

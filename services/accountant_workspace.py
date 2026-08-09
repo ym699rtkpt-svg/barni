@@ -10,8 +10,10 @@ import pandas as pd
 
 from database import dashboard_data, search_invoices
 from services.invoice_workflow import (
+    AccountingReadiness,
     build_undated_queue_snapshot,
     build_workflow_snapshot,
+    database_record_lifecycle,
     load_queue_records,
 )
 
@@ -49,7 +51,7 @@ def accountant_month_status(
     if documents.empty:
         missing_source = pd.Series(dtype=bool)
         missing_supplier = pd.Series(dtype=bool)
-        approved = pd.Series(dtype=bool)
+        ready_mask = pd.Series(dtype=bool)
     else:
         missing_source = documents["archived_path"].apply(
             lambda value: not bool(value) or not Path(str(value)).exists()
@@ -57,13 +59,15 @@ def accountant_month_status(
         missing_supplier = (
             documents["supplier"].fillna("").astype(str).str.strip() == ""
         )
-        approved = documents["status"] == "approved"
+        ready_mask = documents.apply(
+            lambda row: database_record_lifecycle(row.to_dict()).accounting_readiness
+            == AccountingReadiness.READY,
+            axis=1,
+        )
 
     needs_review = (
         workflow.pending_review + workflow.learning + workflow.needs_attention
     )
-    ready_mask = approved & ~missing_source & ~missing_supplier
-
     issues = []
     if workflow.duplicate:
         issues.append(f"{workflow.duplicate} duplicate invoice(s) need attention.")

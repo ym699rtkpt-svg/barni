@@ -577,6 +577,46 @@ def _run_migrations(connection: sqlite3.Connection) -> None:
             "Trusted Business Facts Engine and comparable price ledger",
         )
 
+    if current < 12:
+        _ensure_column(
+            connection,
+            "invoices",
+            "approval_key",
+            "TEXT NOT NULL DEFAULT ''",
+        )
+        connection.executescript(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_approval_key
+            ON invoices(approval_key)
+            WHERE approval_key <> '';
+
+            CREATE TABLE IF NOT EXISTS invoice_approval_operations (
+                operation_key TEXT PRIMARY KEY,
+                operation_status TEXT NOT NULL,
+                duplicate_resolution TEXT NOT NULL DEFAULT 'ask',
+                outcome TEXT NOT NULL DEFAULT '',
+                invoice_id INTEGER,
+                error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                CHECK(operation_status IN (
+                    'processing', 'awaiting_duplicate', 'completed', 'failed'
+                )),
+                FOREIGN KEY(invoice_id)
+                    REFERENCES invoices(id) ON DELETE SET NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_invoice_approval_status
+            ON invoice_approval_operations(operation_status, updated_at);
+            """
+        )
+        _record_schema_version(
+            connection,
+            12,
+            "Idempotent invoice approval operations",
+        )
+
 
 def init_database(path: Path | None = None) -> None:
     db_path = path or (root_dir() / "invoice_archive.db")
@@ -660,13 +700,13 @@ def init_database(path: Path | None = None) -> None:
         connection.close()
 
     # Back up only when a structural upgrade is actually needed.
-    if current_version < 11 and had_existing_database:
+    if current_version < 12 and had_existing_database:
         _backup_database(db_path)
 
     # Second open: run the migration in one explicit transaction.
     connection = connect(db_path)
     try:
-        if current_version < 11:
+        if current_version < 12:
             connection.execute("PRAGMA foreign_keys = OFF")
         connection.execute("BEGIN")
         _run_migrations(connection)
@@ -781,6 +821,8 @@ def replace_duplicate_invoice(
     invoice_id: int,
     source_file: Path,
     document: dict,
+    *,
+    approval_key: str = "",
 ) -> int:
     """Replace an approved invoice while retaining its ID and audit history."""
     destination = archive_destination(source_file, _text(document.get("invoice_date")))
@@ -808,6 +850,7 @@ def replace_duplicate_invoice(
         "confidence": _number(document.get("confidence")) or 0.0,
         "machine_issues": json.dumps(document.get("machine_issues", []), ensure_ascii=False),
         "model_notes": json.dumps(document.get("model_notes", []), ensure_ascii=False),
+        "approval_key": _text(approval_key),
         "updated_at": now,
     }
     try:
@@ -855,7 +898,13 @@ def replace_duplicate_invoice(
     return invoice_id
 
 
-def insert_invoice(source_file: Path, document: dict, move_source: bool = False) -> int:
+def insert_invoice(
+    source_file: Path,
+    document: dict,
+    move_source: bool = False,
+    *,
+    approval_key: str = "",
+) -> int:
     init_database()
     now = datetime.now().isoformat(timespec="seconds")
     destination = archive_destination(source_file, _text(document.get("invoice_date")))
@@ -888,6 +937,7 @@ def insert_invoice(source_file: Path, document: dict, move_source: bool = False)
         "confidence": _number(document.get("confidence")) or 0.0,
         "machine_issues": json.dumps(document.get("machine_issues", []), ensure_ascii=False),
         "model_notes": json.dumps(document.get("model_notes", []), ensure_ascii=False),
+        "approval_key": _text(approval_key),
         "created_at": now,
         "approved_at": now,
         "updated_at": now,
@@ -901,13 +951,13 @@ def insert_invoice(source_file: Path, document: dict, move_source: bool = False)
                 invoice_number, invoice_date, due_date, subtotal,
                 taxable_amount, exempt_amount, vat_rate, vat, total,
                 tax_treatment, category, subcategory, currency, status, confidence, machine_issues,
-                model_notes, created_at, approved_at, updated_at
+                model_notes, approval_key, created_at, approved_at, updated_at
             ) VALUES (
                 :file_name, :archived_path, :document_type, :supplier, :supplier_id,
                 :invoice_number, :invoice_date, :due_date, :subtotal,
                 :taxable_amount, :exempt_amount, :vat_rate, :vat, :total,
                 :tax_treatment, :category, :subcategory, :currency, :status, :confidence, :machine_issues,
-                :model_notes, :created_at, :approved_at, :updated_at
+                :model_notes, :approval_key, :created_at, :approved_at, :updated_at
             )
             """,
             values,
@@ -1215,12 +1265,15 @@ def search_invoices(
     sql = f"""
         SELECT invoices.*,
                invoice_identity_links.canonical_supplier_id,
-               canonical_suppliers.canonical_name AS canonical_supplier_name
+               canonical_suppliers.canonical_name AS canonical_supplier_name,
+               invoice_approval_operations.outcome AS approval_outcome
         FROM invoices
         LEFT JOIN invoice_identity_links
           ON invoice_identity_links.invoice_id = invoices.id
         LEFT JOIN canonical_suppliers
           ON canonical_suppliers.id = invoice_identity_links.canonical_supplier_id
+        LEFT JOIN invoice_approval_operations
+          ON invoice_approval_operations.operation_key = invoices.approval_key
         WHERE {' AND '.join(clauses)}
         ORDER BY {order_column} {direction}, invoices.supplier ASC
     """

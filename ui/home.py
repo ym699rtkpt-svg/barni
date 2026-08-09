@@ -6,7 +6,7 @@ from datetime import datetime
 
 from ai_accountant import render_ai_accountant
 from database import dashboard_data
-from services.invoice_workflow import invoice_workflow_snapshot
+from services.invoice_workflow import approved_documents, invoice_workflow_snapshot
 from services.business_stories import BusinessStoryEngine, StoryContext
 from ui.workflow_status import render_workflow_status
 from ui.business_story import render_business_story
@@ -143,8 +143,11 @@ def render_home():
     _render_home_styles()
     data = dashboard_data()
     workflow = invoice_workflow_snapshot()
-    invoices = data["documents"].copy()
+    invoices = approved_documents()
     items = data["items"].copy()
+    if not items.empty and "invoice_id" in items.columns:
+        approved_ids = set(invoices.get("id", pd.Series(dtype=int)).tolist())
+        items = items[items["invoice_id"].isin(approved_ids)].copy()
     business_stories = BusinessStoryEngine().generate(
         StoryContext(since=datetime.now().strftime("%Y-%m-%dT00:00:00")),
         max_stories=3,

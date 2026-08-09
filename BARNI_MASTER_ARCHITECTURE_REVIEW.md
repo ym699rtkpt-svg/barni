@@ -11,7 +11,7 @@ This review treats Barni's specifications as one product. It does not replace th
 
 No application behavior was changed as part of this review.
 
-# Executive Assessment
+# Executive Summary
 
 Barni has an unusually coherent product thesis for an Alpha-stage product:
 
@@ -19,9 +19,15 @@ Barni has an unusually coherent product thesis for an Alpha-stage product:
 
 The documents consistently reject the wrong product categories—OCR tool, archive, ERP, accounting replacement, dashboard collection, and generic chatbot—and consistently prioritize evidence, calm, trust, progressive disclosure, and human control.
 
-The principal risk is not lack of vision. It is that the vision has been expressed repeatedly through partially overlapping architectures. Several layers currently claim responsibility for interpreting, ranking, explaining, or presenting the same observation. The intended system is sound, but its contracts and document governance are not yet singular enough for a growing team.
+The principal risk is not lack of vision. It is lack of subtraction and enforcement. The vision has been expressed repeatedly through partially overlapping architectures, while the repository still carries the earlier invoice viewer, multiple dashboards, archive-shaped workflows, internal tools, experimental intelligence surfaces, and newer trust services at the same time. Several layers claim responsibility for interpreting, ranking, explaining, or presenting the same observation. The intended system is sound, but the actual product boundary and service contracts are not yet singular enough for a growing team.
 
-Barni Alpha should therefore avoid expanding intelligence breadth for the next phase. The highest-value architectural work is consolidation: one domain vocabulary, one fact lifecycle, one evidence contract, one attention policy, one operational status model, and one authoritative roadmap.
+Barni Alpha should therefore avoid expanding intelligence breadth for the next phase. The highest-value architectural work is consolidation: one domain vocabulary, one fact lifecycle, one evidence contract, one attention policy, one operational status model, one customer experience, and one authoritative roadmap. This is not housekeeping. It is the work that determines whether users will trust Barni and whether the first engineers can extend it without creating contradictory truths.
+
+The brutally honest conclusion is:
+
+> Barni currently has the product doctrine of a world-class company, the architectural ambition of a platform, and the implementation shape of an evolving prototype.
+
+That is acceptable for Alpha only if the company stops adding conceptual layers and proves one narrow loop end to end. If Barni continues adding engines, surfaces, and future capabilities before consolidating them, the sophistication of the documentation will conceal rather than reduce product risk.
 
 ## Scorecard
 
@@ -32,10 +38,28 @@ Barni Alpha should therefore avoid expanding intelligence breadth for the next p
 | **Trust** | **82/100** | Evidence-first rules, conservative identity, reversibility, and comparable facts are excellent foundations. End-to-end provenance and trust-state enforcement remain incomplete. |
 | **UX coherence** | **79/100** | One-screen/one-job, answer-first hierarchy, quiet states, and voice are clear. Home, Feed, Insights, Search, and review still have conceptual overlap. |
 | **Scalability** | **66/100** | The target layering is appropriate, but current direct database access, Streamlit coupling, SQLite-era assumptions, missing tenancy, and absent event lifecycle limit safe scale. |
+| **Maintainability** | **61/100** | Modular services and tests are emerging, but large page modules, parallel legacy systems, direct data access, duplicated documents, and unclear service ownership make change risky. |
 
 ## Why the Overall Score Is Not Higher
 
-The architecture documents describe a mature target, while the repository still contains both target services and legacy page-shaped systems. The architecture cannot be scored only on aspiration. It must also account for whether a new engineer can identify one owner for a rule, one contract for evidence, and one safe path for state changes.
+The architecture documents describe a mature target, while the repository still contains both target services and legacy page-shaped systems. The architecture cannot be scored only on aspiration. It must also account for whether a new engineer can identify one owner for a rule, one contract for evidence, and one safe path for state changes. Today, that answer is often “probably,” not “yes.”
+
+## Review Coverage and Source Integrity
+
+This assessment reviewed every Markdown architecture, product, vision, journey, roadmap, design, intelligence, pilot, and review document present in the repository. It also inspected the project structure and the active service/UI boundaries to test whether the written architecture maps to real ownership.
+
+The requested `BAR-003_BUSINESS_INTELLIGENCE.md` does not exist under that exact name; the repository contains `BAR-003_BUSINESS_INTELLIGENCE_RULES.md`, which was treated as the intended document.
+
+Only these numbered BAR specifications exist as standalone files:
+
+- BAR-001 Engineering Guidelines
+- BAR-002 Design System
+- BAR-003 Business Intelligence Rules
+- BAR-004 Product Vision
+- BAR-011 Conversation Layer
+- BAR-013 Attention Engine
+
+BAR-005 through BAR-010 and BAR-012 do not exist as standalone documents. Their concepts are distributed through the Blueprint, Business Brain, OS, services, tests, and historical requests. This review does not pretend those missing files were available. Their absence is itself a material architecture-governance finding.
 
 # What Is Coherent
 
@@ -55,6 +79,66 @@ The following principles are stable across the Constitution, Manifesto, Product 
 12. **The architecture is reusable.** Identity, facts, stories, attention, and conversation are not owned by one page.
 
 These principles strongly support the company mission. They form the durable core of Barni and should not be reconsidered casually.
+
+# Biggest Strengths
+
+## 1. The company knows what product it does not want to become
+
+The rejection of OCR-as-product, ERP density, accounting replacement, generic dashboards, fake AI, gamification, and noisy notifications is strategically valuable. Many startups discover these boundaries only after years of feature accumulation.
+
+## 2. Trust is designed as architecture, not copywriting
+
+Canonical identity, reversible decisions, source evidence, comparable facts, calm uncertainty, conservative recommendations, and explicit refusal form a credible trust foundation. This is Barni's strongest potential competitive advantage.
+
+## 3. The value chain is directionally correct
+
+Data → identity → normalization → facts → understanding → action is the right abstraction for a multi-source business-memory product. It can outlive invoices, Streamlit, SQLite, and any specific AI model.
+
+## 4. Product and voice principles reinforce each other
+
+“Meaning before metrics,” “silence is a feature,” one primary action, progressive disclosure, and Barni's quiet confidence describe one coherent experience rather than separate brand and UX systems.
+
+## 5. Human correction is treated as durable knowledge
+
+Identity Review and reversibility recognize that the owner is not merely correcting a form. The owner is teaching the system. Preserving evidence and decision history is the correct long-term model.
+
+## 6. The architecture resists page-local intelligence
+
+The repeated insistence that UI renders rather than reasons is correct. The newer fact, story, identity, workflow, and intelligence services show movement toward reusable domain boundaries.
+
+## 7. Restaurants are a strong initial wedge
+
+Frequent supplier invoices, volatile prices, recurring purchases, mixed naming, narrow margins, and time-poor owners create a real environment in which trusted memory can become visible value quickly.
+
+# Biggest Weaknesses
+
+## 1. Barni has too many names for its own thinking
+
+Knowledge Engine, Business Brain, Business Intelligence, Invoice Intelligence, Proactive Intelligence, Thinking, Facts, Stories, Attention, Conversation, and Recommendations form a conceptual tax on every future engineer. Several are valid stages, but the documents do not enforce the boundary consistently.
+
+## 2. The company has designed a platform before proving one indispensable behavior
+
+The OS anticipates payroll, employees, CRM, bank data, WhatsApp, contracts, POS, inventory, and more. That vision is plausible, but the current product has not yet proven that one restaurant owner returns because Barni reliably notices and explains one important purchasing change.
+
+## 3. The customer product still reflects its invoice-viewer ancestry
+
+Archive logic, database dashboards, batch tools, raw statuses, large Streamlit pages, and multiple dashboard concepts remain close to the active product. The documentation says “one Barni”; the repository still says “many tools.”
+
+## 4. Trust contracts are specified more completely than they are operationalized
+
+Price facts are the strongest example. Other claims—unusual spending, supplier attention, inactivity, duplicate similarity, business completion, and period explanations—do not yet have equally mature typed fact and evidence contracts.
+
+## 5. Documentation quantity is reducing clarity
+
+There are multiple visions, roadmaps, architecture descriptions, journeys, and product-law documents. A new engineer can cite a correct sentence from the wrong authority and still create architectural drift.
+
+## 6. The architecture underestimates lifecycle complexity
+
+Facts, observations, stories, attention decisions, recommendations, and identity decisions all change over time. Versioning, invalidation, replay, expiry, supersession, and recovery are not yet first-class enough.
+
+## 7. Scale risks are postponed rather than bounded
+
+SQLite and Streamlit are reasonable Alpha choices. Missing business scoping, permissions, data retention, and event idempotency are not merely future scaling concerns; they shape every record created today.
 
 # Mission Trace: From Data to Understanding
 
@@ -357,6 +441,139 @@ Recommendations and actions are described, but there is no shared contract for p
 ## 12. Quality gates lack system-level acceptance datasets
 
 There are tests for several emerging services, but no canonical real-data evaluation suite spanning extraction correction, identity, facts, observation, attention, narrative, evidence opening, and action outcome in Hebrew and English.
+
+# Technical Debt
+
+## Critical debt
+
+1. **Parallel status vocabularies.** Database status, queue status, batch states, duplicate state, learning state, and accountant readiness are not one explicit state model.
+2. **Large UI/orchestration modules.** `daily_intake.py`, `smart_archive.py`, `app.py`, and other page-shaped modules combine interaction state, workflow sequencing, formatting, and data access.
+3. **Direct persistence knowledge.** Several services and pages understand SQLite tables or general database helpers directly instead of stable repositories.
+4. **Derived-data invalidation.** Identity reversal or source correction lacks a documented, comprehensive rebuild path for facts, observations, stories, Search, and counters.
+5. **Legacy customer surfaces.** Older dashboards, archive views, diagnostics, and migration utilities remain in the same application architecture.
+
+## High debt
+
+1. **No shared evidence type across domains.** Each service invents evidence shape around invoice IDs and dictionaries.
+2. **No stable domain event envelope.** Event version, business scope, causation ID, idempotency key, occurred time, actor, and replay behavior are not canonical.
+3. **Inconsistent domain object strength.** Dataclasses and structured objects coexist with dictionaries and pandas rows, permitting silent shape drift.
+4. **No enforced dependency boundaries.** The intended layering is documented but not protected by package structure or architecture tests.
+5. **UI styling duplication.** The design system is strong on principles, but Streamlit limitations and page-specific CSS still make visual behavior expensive to maintain.
+6. **Insufficient end-to-end tests.** Unit tests exist for newer services, but the defining loop is not yet protected as one repeatable contract test with real database and file behavior.
+
+## Medium debt
+
+1. **Historical names and files.** “Restaurant Invoice Viewer,” “Doctor Yoti OS,” AI Accountant, archive, and multiple dashboard names communicate obsolete mental models.
+2. **Localization inconsistency.** English product copy, Hebrew operational copy, bidirectional business data, and formatting rules are not governed by one locale service.
+3. **Operational tooling boundaries.** Pilot logs, diagnostics, migrations, and repair flows need an explicit operator application or protected mode.
+4. **No documentation build or validation.** Broken links, duplicate milestone IDs, obsolete authority statements, and empty docs can enter the repository unnoticed.
+
+# Product Risks
+
+## 1. The owner may not experience value before being asked to maintain data
+
+Identity review, invoice correction, approval, and evidence confirmation all demand work. If the immediate post-approval understanding is weak, Barni feels like data preparation software—the exact category it rejects.
+
+## 2. “Business Memory” may remain an internal metaphor
+
+The phrase is compelling to the company, but owners care about remembering a price, catching a duplicate, preparing a supplier conversation, or closing the month. Memory must be proven through outcomes, not explained as a feature.
+
+## 3. Calmness can hide incompleteness
+
+Silence is premium only when coverage is sufficient. Without coverage disclosure, a quiet Home can create false reassurance.
+
+## 4. Evidence can become burdensome
+
+Evidence links build trust, but exposing too much provenance turns every answer into an audit workflow. The default experience must remain conclusion-first with evidence one action away.
+
+## 5. Conversation can overpromise intelligence
+
+Even without chat bubbles, “Ask Barni anything” implies broad capability. A finite intent registry will feel broken unless supported scope, refusal, and suggested questions are designed with exceptional care.
+
+## 6. Restaurant specificity can be diluted too soon
+
+The OS is designed for many industries and data sources. Pursuing that breadth before restaurant purchasing is indispensable would sacrifice the domain depth that makes Barni defensible.
+
+## 7. Too many top-level surfaces can recreate ERP navigation
+
+Home, Feed, Search, Business Memory, Insights, Accountant, Recipes, Identity Review, and internal tools can easily become modules the user must learn. Barni should grow capabilities behind a simpler experience, not add destinations for every service.
+
+# Areas That Are Over-Engineered
+
+## 1. Long-term OS breadth
+
+Employees, payroll, customers, bookings, CRM, contracts, government forms, email, WhatsApp, POS, inventory, and bank transactions are architecturally imaginable but premature. They should remain a one-page vision, not influence near-term abstractions beyond generic evidence and business scoping.
+
+## 2. Number of conceptual engines
+
+The system has designed separate named layers for facts, intelligence, proactive intelligence, thinking, stories, attention, conversation, recommendations, and a Business Brain. A smaller vocabulary could describe the same architecture more clearly.
+
+Recommended simplification:
+
+```text
+Memory
+→ Facts
+→ Observations
+→ Attention
+→ Explanation
+→ Action
+```
+
+Thinking, Stories, and Conversation become explanation modes, not independent truth-producing engines.
+
+## 3. Conversation roadmap before trusted fact coverage
+
+The Conversation document is thorough, but most valuable owner questions require period-spend and behavior facts that do not exist yet. The specification is ahead of the product foundation.
+
+## 4. Extensive future module catalog
+
+The target architecture enumerates Recipes, Reports, Notifications, Settings, AI Chat, and multiple intelligence modules before their user demand and contracts are proven. A modular monolith with fewer bounded packages is the better near-term architecture.
+
+## 5. Attention precision before calibration data
+
+BAR-013 defines detailed weights and thresholds. The dimensions are useful; the numeric model should be treated as a hypothesis until restaurant-owner ranking data exists. False precision in attention scoring would violate Barni's own intelligence rules.
+
+# Areas That Are Under-Designed
+
+## 1. The approval transaction
+
+The most important product event must atomically or reliably coordinate invoice state, canonical links, fact construction, learning events, Search freshness, accountant readiness, and the completion story. Its failure and retry behavior needs a formal design.
+
+## 2. Evidence as a platform primitive
+
+Evidence should support any source type and every claim, correction, recommendation, and action. The current invoice-centric references are insufficient for the OS vision.
+
+## 3. Fact and observation lifecycle
+
+Facts need version, validity, supersession, builder version, and recomputation status. Observations need stable identity, first/last seen, resolved state, evidence revision, expiry, and reactivation rules.
+
+## 4. Multi-business isolation
+
+Business ownership must be part of identifiers, repositories, events, caches, files, and tests before remote deployment—not retrofitted afterward.
+
+## 5. Permissions and accountability
+
+Owner, manager, reviewer, accountant, and internal operator roles need explicit authority boundaries. “Who confirmed” is stored in places, but not governed as a system.
+
+## 6. Privacy and AI provider boundaries
+
+What is sent to extraction or language providers, how long it is retained, how users export/delete it, and how diagnostics are redacted need company-level policy and enforceable adapters.
+
+## 7. Recovery and operations
+
+Backup, restore, archive integrity, partial approval failure, stuck processing, event replay, and migration rollback are trust features for a product holding business evidence.
+
+## 8. Outcome measurement
+
+The product cannot optimize for “better decisions” without defining observable proxies: time to finish daily intake, corrections remembered, duplicate payments avoided, trusted answers delivered, attention accepted/dismissed, and evidence successfully traced.
+
+## 9. Accessibility and bidirectional interaction
+
+Keyboard search, focus management, screen reader semantics, RTL/LTR mixed content, responsive tables, and document review at narrow widths require deliberate component-level standards.
+
+## 10. Developer onboarding and architectural enforcement
+
+There is no concise “start here,” no authoritative system diagram tied to packages, no decision-record index, and no automated check preventing forbidden UI-to-database or cross-layer imports.
 
 # Features That No Longer Fit the Company Vision
 
@@ -665,6 +882,188 @@ The order below prioritizes dependency integrity over feature visibility. Each p
 
 **Expected effort:** Medium  
 **Expected impact:** Very high
+
+# What Should Not Be Built Yet
+
+The following work should be explicitly deferred until the Barni Alpha definition below is proven with real restaurants.
+
+1. **Open-ended chat or generative business advice.** The evidence and fact coverage are not broad enough, and the trust cost of one invented answer is too high.
+2. **Predictions and forecasting.** Historical depth, seasonality policy, evaluation data, and uncertainty calibration are not mature.
+3. **Automated supplier actions.** Barni should not contact suppliers, place orders, or negotiate until recommendations have been repeatedly validated and authorization is formalized.
+4. **Cross-industry expansion.** Retail, clinics, construction, services, and manufacturing would dilute restaurant learning before product-market fit.
+5. **Payroll, employee, CRM, bank, POS, email, WhatsApp, contract, or inventory ingestion.** The generic evidence contract should prepare for them; the product should not integrate them yet.
+6. **Recipe profitability as a primary destination.** It depends on trustworthy product identity, conversions, yield, waste, menu price, and a validated owner workflow.
+7. **Multi-location intelligence.** Business isolation may be designed now, but cross-location insights should wait for single-location trust and real customer demand.
+8. **External notifications.** Email and messaging channels should wait until Attention has demonstrated low false-positive rates and stable acknowledgment semantics in-product.
+9. **Custom dashboards and report builders.** These recreate the configuration burden Barni exists to remove.
+10. **Autonomous agents.** The company does not yet need agents; it needs deterministic facts, explanations, and controlled workflows.
+11. **Gamification or visible Barni evolution.** Memory maturity has no defensible measurement contract yet.
+12. **A distributed-services rewrite.** A modular monolith is the correct architecture until scale and team topology prove otherwise.
+13. **A database migration for its own sake.** SQLite is not the primary problem. Ownership, lifecycle, and contracts are.
+14. **More top-level navigation destinations.** New capabilities should first strengthen Home, Feed, Search, Business Memory, Insights, or Accountant.
+
+# Next Company Priorities
+
+## Priority 1 — Make one trusted promise, not many plausible promises
+
+Choose the promise:
+
+> Approve an invoice, and Barni immediately remembers it, explains the most important supported change, and can prove why.
+
+Every team decision should serve this loop until it is boringly reliable.
+
+## Priority 2 — Establish one architecture authority
+
+Create a small Architecture Council function, even if it is initially one technical founder and one product owner. It owns the glossary, decision records, service boundaries, document status, and exception process.
+
+## Priority 3 — Build the trust platform beneath the experience
+
+Finish operational state, business scoping, evidence references, confidence taxonomy, identity reversibility, fact recomputation, and event idempotency before broad intelligence.
+
+## Priority 4 — Reduce the customer product
+
+Hide legacy archives, generic dashboards, diagnostics, migrations, batch tooling, placeholder Recipes, and ambiguous AI surfaces. Make the product feel smaller while the architecture becomes stronger.
+
+## Priority 5 — Validate owner value weekly
+
+Observe restaurant owners completing real intake and answering real purchasing questions. Measure decisions improved, time saved, corrections repeated, and attention usefulness. Do not use feature engagement as the primary signal.
+
+# Recommended Barni Alpha Definition
+
+Alpha is not “all current features available.” Alpha is one trustworthy learning loop used by a small number of closely supported restaurants.
+
+Barni Alpha is complete when:
+
+- A restaurant can feed supported invoices, review uncertainty, handle duplicates, approve, and finish in under three minutes for an ordinary daily batch.
+- Every page uses one invoice lifecycle and the same counters.
+- Approval is idempotent and updates Business Memory, Search, Home, and Accountant reliably.
+- Supplier and product identities are conservative, reviewable, evidence-backed, and reversible.
+- Every price comparison shown to a user comes from the Comparable Price Ledger.
+- The approval moment shows at most one strong supported story or an honest quiet/limited state.
+- Every meaningful claim opens its source invoice evidence.
+- Home shows only current actionable attention and one primary next step.
+- Search finds approved invoices, suppliers, and products in Hebrew and English without exposing archive structure.
+- Customer navigation excludes unfinished, diagnostic, migration, repair, and generic dashboard surfaces.
+- Backup, restore, integrity checking, and failure recovery have been rehearsed.
+- At least three pilot restaurants complete the core journey repeatedly without contradictory states or unsupported insights.
+
+Alpha does **not** require open-ended conversation, predictive intelligence, external notifications, recipes, multi-location, or new data sources.
+
+# Recommended Barni Beta Definition
+
+Beta proves repeatable value and operating safety beyond founder-supervised use.
+
+Barni Beta is complete when:
+
+- Ten to twenty restaurants use the daily workflow with production-like data over multiple months.
+- Business scoping, permissions, audit records, retention, export, deletion, and provider-data policies are enforced.
+- Period-spend and supplier/product contribution facts reconcile to source evidence.
+- Attention is shared across Home, Feed, and Insights, with measured false-positive and dismissal rates.
+- Search supports a small deterministic set of evidence-backed business questions with calm refusal outside supported coverage.
+- Identity corrections trigger deterministic recomputation and never leave stale conclusions.
+- Accountant readiness and monthly export are trusted by real owner/accountant pairs.
+- Monitoring, migration, backup, recovery, and support workflows operate without exposing internal tooling to customers.
+- The company can demonstrate recurring value: time saved, avoided duplicate risk, trusted price changes found, or faster business answers.
+
+Beta still does not require broad integrations, autonomous actions, or cross-industry expansion.
+
+# Recommended Barni V1 Definition
+
+V1 is the smallest product a restaurant can rely on without founder supervision and would be disappointed to lose.
+
+Barni V1 is complete when:
+
+- The Feed → understand → act → remember loop is fast, reliable, and self-explanatory.
+- Home answers “What deserves my attention today?” with high precision.
+- Search answers the most common purchasing-memory questions from trusted facts and source evidence.
+- Business Memory provides reliable supplier, product, comparable price, and purchasing history without database-shaped browsing.
+- Insights explains supported period changes and their contributors, not just charts.
+- Accountant provides a dependable monthly readiness and export workflow without pretending to replace accounting software.
+- Identity Review asks only valuable questions and remembers reversible decisions across the product.
+- Privacy, tenancy, permissions, auditability, recovery, accessibility, and bilingual behavior meet a documented production standard.
+- Product usefulness is validated across a meaningful restaurant cohort, with retention driven by recurring decisions rather than upload volume.
+- The modular monolith has enforceable boundaries and can accept a second evidence source without redesigning Identity, Facts, Evidence, Attention, or Explanation.
+
+V1 should still feel smaller than most business software. Its power should come from connected understanding, not module count.
+
+# If OpenAI, Apple, or Linear Were Building Barni Today
+
+## What OpenAI would simplify
+
+OpenAI would likely reduce the architecture to a governed intelligence loop with strong evaluations:
+
+- One tool-using question interface backed by typed facts and strict evidence retrieval.
+- One shared evaluation suite for factuality, refusal, citation, and recommendation boundaries.
+- Fewer hand-named intelligence engines; more explicit contracts between retrieval, reasoning, verification, and action.
+- Model flexibility behind adapters, with deterministic verification controlling what reaches the user.
+
+OpenAI would probably challenge the current amount of deterministic template architecture in Conversation once the claim verifier is mature—but it would also insist that natural-language flexibility never expand the supported fact set.
+
+## What Apple would remove
+
+Apple would remove most visible product architecture:
+
+- No archive page as a primary concept.
+- No separate dashboard family.
+- No visible “engine,” “confidence,” “knowledge graph,” or “Business Facts” terminology.
+- No empty Recipes destination.
+- No developer, migration, pilot, or batch tools in the customer product.
+- Fewer navigation items and fewer cards.
+
+The likely Apple experience would be three dominant states:
+
+1. **Today** — one thing worth knowing or doing.
+2. **Feed Barni** — teach it new evidence.
+3. **Ask/Search** — retrieve anything remembered.
+
+Business Memory, Insights, and Accountant might remain as contextual destinations, but they would not compete equally in the first-level experience. Identity Review would appear only when Barni needs help, not as a place the user must discover.
+
+Apple would also redesign invoice review around one sentence, one action, and one evidence affordance. The editable form would be visually subordinate.
+
+## What Linear would redesign
+
+Linear would enforce one domain model and make the workflow extremely fast:
+
+- One command/query layer between UI and domain services.
+- Keyboard-first Search and review.
+- Stable, explicit workflow states with no page-specific naming.
+- One component system and one owner per interaction pattern.
+- Aggressive removal of legacy routes and duplicated components.
+- Small, reversible migrations rather than permanent compatibility clutter.
+- Product telemetry around completion speed, error recovery, and decision usefulness.
+
+Linear would likely replace long specification documents with a concise product constitution, a technical architecture, a design system, a roadmap, and short decision records. It would treat the current documentation sprawl as a maintainability bug.
+
+## The combined verdict
+
+All three companies would simplify Barni more aggressively than the current plan.
+
+They would keep:
+
+- The mission
+- Canonical memory
+- Evidence-first trust
+- Reversible identity
+- Comparable facts
+- Quiet attention
+- Human control
+
+They would remove or redesign:
+
+- Multiple dashboards
+- Archive-first navigation
+- AI Accountant and generic chat framing
+- Overlapping engine names
+- Page-local intelligence
+- Premature Recipes, Notifications, and multi-domain expansion
+- Customer-visible technical confidence and architecture vocabulary
+- Duplicate roadmaps, visions, and journey documents
+
+Most importantly, they would not ask the customer to understand Barni's architecture. They would make the architecture disappear behind one immediate experience:
+
+> Barni noticed what changed, explained why, and showed the evidence.
+
+That is the product. Everything else is implementation.
 
 # Final CTO Recommendation
 

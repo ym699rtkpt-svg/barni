@@ -1,20 +1,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from pathlib import Path
 from typing import Callable
 
 import pandas as pd
 import streamlit as st
 
-from database import duplicate_invoice, insert_invoice, replace_duplicate_invoice
-
-from knowledge_engine.engine import KnowledgeEngine
-from knowledge_engine.events import KnowledgeEvent
-
-
-knowledge_engine = KnowledgeEngine()
+from services.invoice_workflow import InvoiceWorkflowService
 
 TAX_TREATMENTS = [
     "חייב במע״מ",
@@ -239,61 +231,12 @@ def approve_to_database_detailed(
     on_progress: Callable[[str], None] | None = None,
     duplicate_resolution: str = "ask",
 ) -> tuple[bool, str, dict]:
-    source = Path(record["stored_file"])
-    notify = on_progress or (lambda stage: None)
-
-    notify("duplicate_check")
-    existing = duplicate_invoice(
-        updated_document.get("supplier_id", ""),
-        updated_document.get("invoice_number", ""),
-        updated_document.get("document_type", ""),
-    )
-    if existing and duplicate_resolution == "ask":
-        return (
-            False,
-            "כבר קיים מסמך עם אותו ספק, מספר וסוג.",
-            {"outcome": "duplicate", "invoice_id": existing["id"], "existing": existing},
-        )
-
-    if existing and duplicate_resolution == "skip":
-        return True, "החשבונית החדשה דולגה לפי בחירתך.", {
-            "outcome": "skipped", "invoice_id": existing["id"], "existing": existing,
-        }
-
-    notify("saving")
-    try:
-        if existing and duplicate_resolution == "replace":
-            invoice_id = replace_duplicate_invoice(
-                existing["id"], source, updated_document
-            )
-            saved_outcome = "replaced"
-        else:
-            invoice_id = insert_invoice(
-                source_file=source,
-                document=updated_document,
-                move_source=True,
-            )
-            saved_outcome = "kept_both" if existing else "saved"
-    except Exception as exc:
-        return False, str(exc), {"outcome": "error", "invoice_id": None}
-
-    notify("learning")
-    event = KnowledgeEvent(
-        event_type="invoice_approved",
-        payload={
-            **updated_document,
-            "invoice_id": invoice_id,
-        },
-        created_at=datetime.now(),
-    )
-
-    knowledge_engine.handle_event(event)
-
-    return (
-        True,
-        f"המסמך נשמר במסד ובארכיון. מזהה: {invoice_id}",
-        {"outcome": saved_outcome, "invoice_id": invoice_id},
-    )
+    return InvoiceWorkflowService().approve(
+        record,
+        updated_document,
+        on_progress=on_progress,
+        duplicate_resolution=duplicate_resolution,
+    ).as_legacy_tuple()
 
 
 def approve_to_database(record: dict, updated_document: dict) -> tuple[bool, str]:

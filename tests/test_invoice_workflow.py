@@ -5,9 +5,16 @@ import unittest
 import pandas as pd
 
 from services.invoice_workflow import (
+    AccountingReadiness,
+    ApprovalState,
+    DuplicateState,
     InvoiceWorkflowStatus,
+    ProcessingState,
+    ReviewState,
     build_undated_queue_snapshot,
     build_workflow_snapshot,
+    database_record_lifecycle,
+    queue_record_lifecycle,
     queue_record_status,
 )
 
@@ -149,6 +156,30 @@ class InvoiceWorkflowStatusTests(unittest.TestCase):
 
         self.assertEqual(snapshot.needs_attention, 1)
         self.assertEqual(snapshot.pending_review, 0)
+
+    def test_canonical_model_keeps_lifecycle_concerns_separate(self):
+        lifecycle = queue_record_lifecycle({
+            "queue_status": "error",
+            "document": {"invoice_date": "2026-08-02"},
+        })
+
+        self.assertEqual(lifecycle.processing_state, ProcessingState.FAILED)
+        self.assertEqual(lifecycle.review_state, ReviewState.NEEDS_ATTENTION)
+        self.assertEqual(lifecycle.approval_state, ApprovalState.NOT_APPROVED)
+        self.assertEqual(lifecycle.duplicate_state, DuplicateState.NOT_CHECKED)
+        self.assertEqual(lifecycle.accounting_readiness, AccountingReadiness.BLOCKED)
+        self.assertEqual(lifecycle.customer_state, InvoiceWorkflowStatus.NEEDS_ATTENTION)
+
+    def test_approved_database_record_has_one_customer_state(self):
+        lifecycle = database_record_lifecycle({
+            "status": "approved",
+            "supplier": "Tnuva",
+            "archived_path": "/archive/invoice.pdf",
+        })
+
+        self.assertEqual(lifecycle.approval_state, ApprovalState.APPROVED)
+        self.assertEqual(lifecycle.customer_state, InvoiceWorkflowStatus.APPROVED)
+        self.assertEqual(lifecycle.accounting_readiness, AccountingReadiness.BLOCKED)
 
 
 if __name__ == "__main__":

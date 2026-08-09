@@ -4,6 +4,7 @@ import pandas as pd
 
 from database import dashboard_data
 from services.business_identity import BusinessIdentityRepository
+from services.invoice_workflow import approved_documents
 
 
 def _clean_text(series: pd.Series) -> pd.Series:
@@ -19,8 +20,11 @@ def _empty_growth() -> pd.DataFrame:
 def business_memory_data() -> dict:
     identity_health = BusinessIdentityRepository().identity_health()
     data = dashboard_data()
-    invoices = data["documents"].copy()
+    invoices = approved_documents()
     items = data["items"].copy()
+    if not items.empty and "invoice_id" in items.columns:
+        approved_ids = set(invoices.get("id", pd.Series(dtype=int)).tolist())
+        items = items[items["invoice_id"].isin(approved_ids)].copy()
 
     if not items.empty and "line_type" in items.columns:
         product_items = items[items["line_type"] == "product"].copy()

@@ -10,6 +10,11 @@ import pandas as pd
 import streamlit as st
 
 from services.barni_thinking import think_about_invoice
+from services.invoice_workflow import (
+    STATUS_LABELS,
+    database_record_lifecycle,
+    database_status_label,
+)
 from ui.barni_thinking import render_barni_thinking
 
 from database import (
@@ -488,7 +493,13 @@ def _render_invoice_detail(invoice: pd.Series, all_invoices: pd.DataFrame) -> No
             details[0].markdown(f"**Invoice number**  \n{invoice_number or 'No invoice number'}")
             details[1].markdown(f"**Date**  \n{_display_date(invoice.get('invoice_date'))}")
             details[2].markdown(f"**Total**  \n{_money(invoice.get('total'))}")
-            details[3].markdown(f"**Status**  \n{invoice.get('status') or 'Unknown status'}")
+            lifecycle = database_record_lifecycle(invoice.to_dict())
+            status_label = (
+                STATUS_LABELS[lifecycle.customer_state]
+                if lifecycle.customer_state is not None
+                else "Not in active workflow"
+            )
+            details[3].markdown(f"**Status**  \n{status_label}")
 
         st.markdown("### Products")
         if items.empty:
@@ -719,7 +730,10 @@ def render_database_archive() -> None:
 
             row1 = st.columns([1.25, 1.15, .8, .95, 1, 1, 1, 1])
             statuses = row1[0].multiselect(
-                "Status", ["approved", "review", "rejected"], default=["approved"]
+                "Status",
+                ["approved", "review", "rejected"],
+                default=["approved"],
+                format_func=database_status_label,
             )
             sort_label = row1[1].selectbox(
                 "Sort by", ["Date", "Supplier", "Amount", "Invoice number"]
