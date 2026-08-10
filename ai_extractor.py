@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Literal, Mapping
 
 from openai import OpenAI
+from PIL import Image
 from pydantic import BaseModel, Field
 
 
@@ -135,10 +136,30 @@ class InvoiceItem(BaseModel):
     line_total: float | None = None
 
 
+class SupplierEvidence(BaseModel):
+    """Exact visual provenance for an image-derived supplier candidate."""
+
+    exact_text: str = Field(
+        default="",
+        description="Exact supplier name copied from the visible document, without correction.",
+    )
+    context: str = Field(
+        default="",
+        description="A short exact visible line containing the supplier name and nearby role label.",
+    )
+    role: Literal["issuer", "recipient", "unknown"] = "unknown"
+    page: int | None = Field(default=None, ge=1)
+    left: float | None = Field(default=None, ge=0.0, le=1.0)
+    top: float | None = Field(default=None, ge=0.0, le=1.0)
+    right: float | None = Field(default=None, ge=0.0, le=1.0)
+    bottom: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
 class InvoiceDocument(BaseModel):
     document_type: DocumentType
     supplier: str = ""
     supplier_id: str = ""
+    supplier_evidence: SupplierEvidence = Field(default_factory=SupplierEvidence)
     invoice_number: str = ""
     invoice_date: str = Field(
         default="",
@@ -187,6 +208,13 @@ Rules:
 3. Never invent a value. Use an empty string or null when the document does not support it.
    For supplier, copy only a company name explicitly visible on the document. Never infer,
    complete, translate, or guess a supplier name from general knowledge or similarity.
+   For image inputs, supplier_evidence must quote the exact visible supplier text and a short
+   exact context line. Mark role=issuer only when that text identifies the document issuer.
+   For issuer evidence, return the 1-based page and a tight normalized bounding box using
+   left/top/right/bottom values from 0.0 to 1.0 around the quoted visible text.
+   Names in "לכבוד", Bill To, or customer/recipient areas use role=recipient and must not be
+   returned as supplier. If exact visual evidence is unavailable, leave supplier and its
+   evidence empty.
 4. Classify the document accurately: invoice, invoice/receipt, receipt, credit note,
    delivery note, monthly statement, payment request, or other.
 5. Credit-note amounts must be negative.
@@ -263,6 +291,75 @@ def image_data_url(path: Path) -> str:
     mime = "image/jpeg" if path.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:{mime};base64,{encoded}"
+
+
+def extract_visual_supplier_evidence_text(path: Path, evidence: object) -> str:
+    """Re-read a model-located source crop locally; return no text on uncertainty."""
+    if not isinstance(evidence, dict):
+        return ""
+    try:
+        page_number = int(evidence.get("page") or 0)
+        bounds = tuple(
+            float(evidence.get(name))
+            for name in ("left", "top", "right", "bottom")
+        )
+    except (TypeError, ValueError):
+        return ""
+    left, top, right, bottom = bounds
+    if (
+        page_number < 1
+        or not all(0.0 <= value <= 1.0 for value in bounds)
+        or right <= left
+        or bottom <= top
+    ):
+        return ""
+
+    rendered_pages: list[Path] = []
+    image: Image.Image | None = None
+    try:
+        if path.suffix.lower() == ".pdf":
+            rendered_pages = pdf_to_images(path, max_pages=page_number, dpi=300)
+            if len(rendered_pages) < page_number:
+                return ""
+            image = Image.open(rendered_pages[page_number - 1]).convert("RGB")
+        elif path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+            image = Image.open(path).convert("RGB")
+        else:
+            return ""
+
+        padding = 0.015
+        crop_box = (
+            max(0, int((left - padding) * image.width)),
+            max(0, int((top - padding) * image.height)),
+            min(image.width, int((right + padding) * image.width)),
+            min(image.height, int((bottom + padding) * image.height)),
+        )
+        if crop_box[2] - crop_box[0] < 5 or crop_box[3] - crop_box[1] < 5:
+            return ""
+        crop = image.crop(crop_box)
+        crop = crop.resize((crop.width * 2, crop.height * 2), Image.Resampling.LANCZOS)
+        with tempfile.NamedTemporaryFile(suffix=".png") as source:
+            crop.save(source.name, format="PNG")
+            result = _run([
+                _command_path("tesseract"),
+                source.name,
+                "stdout",
+                "-l", "heb+eng",
+                "--psm", "7",
+            ], timeout=30)
+        return result.stdout
+    except (FileNotFoundError, OSError, RuntimeError, subprocess.TimeoutExpired):
+        return ""
+    finally:
+        if image is not None:
+            image.close()
+        for page in rendered_pages:
+            page.unlink(missing_ok=True)
+        if rendered_pages:
+            try:
+                rendered_pages[0].parent.rmdir()
+            except OSError:
+                pass
 
 
 def build_input(path: Path, max_pages: int = 6) -> tuple[list[dict], str]:

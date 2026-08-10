@@ -32,7 +32,7 @@ def _field_needs_review(issues: set[str], field: str) -> bool:
     if f"missing_{field}" in issues:
         return True
     if field in {"subtotal", "taxable_amount", "exempt_amount", "vat", "total"}:
-        if "amount_mismatch" in issues:
+        if "amount_mismatch" in issues or "subtotal_mismatch" in issues:
             return True
         if f"credit_note_{field}_must_be_negative" in issues:
             return True

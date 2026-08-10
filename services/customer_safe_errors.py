@@ -17,6 +17,8 @@ _ISSUE_MESSAGES = {
     "missing_vat": "Check the VAT amount.",
     "missing_statement_month": "Check the statement month.",
     "amount_mismatch": "The invoice amounts need a quick check.",
+    "subtotal_mismatch": "The amount before VAT needs a quick check.",
+    "missing_vat_rate": "Check the VAT rate.",
     "vat_rate_mismatch": "The VAT details need a quick check.",
     "exempt_document_with_nonzero_vat": "The VAT details need a quick check.",
     "extraction_service_unavailable": "I couldn't read everything reliably.",

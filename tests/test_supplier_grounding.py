@@ -75,6 +75,94 @@ class SupplierGroundingTests(unittest.TestCase):
         self.assertEqual(document["supplier_id"], "515123456")
         self.assertEqual(document["supplier_grounding"], "visible_source_text")
 
+    def test_scanned_supplier_with_exact_issuer_evidence_survives_for_review(self):
+        with patch.object(
+            hybrid_engine,
+            "extract_with_ai",
+            return_value=(
+                _invoice_document(
+                    supplier="רביע מדאם",
+                    supplier_id="",
+                    supplier_evidence={
+                        "exact_text": "רביע מדאם",
+                        "context": "רביע מדאם",
+                        "role": "issuer",
+                        "page": 1,
+                        "left": 0.1,
+                        "top": 0.05,
+                        "right": 0.5,
+                        "bottom": 0.15,
+                    },
+                    invoice_number="0349",
+                    subtotal=1080.0,
+                    taxable_amount=1080.0,
+                    vat=194.4,
+                    total=1274.4,
+                    vat_rate=18.0,
+                ),
+                "ai_image_vision",
+            ),
+        ), patch.object(
+            hybrid_engine,
+            "extract_visual_supplier_evidence_text",
+            return_value="רביע מדאם",
+        ):
+            document, _ = extract_hybrid(
+                Path("redacted-rabia-madam.jpg"),
+                raw_text="חשבונית 0349\nסהכ 1274.40",
+                source_text_method="local_image_ocr",
+            )
+
+        self.assertEqual(document["supplier"], "רביע מדאם")
+        self.assertEqual(document["supplier_grounding"], "vision_issuer_evidence")
+        self.assertIn("supplier_requires_confirmation", document["model_notes"])
+        self.assertNotIn("missing_supplier", document["machine_issues"])
+        self.assertEqual(document["status"], "review")
+        self.assertEqual(document["invoice_number"], "0349")
+        self.assertEqual(document["total"], 1274.4)
+
+    def test_unverified_vision_quote_fails_closed(self):
+        document = ground_supplier_identity(
+            _invoice_document(
+                supplier="Plausible but unsupported supplier",
+                supplier_evidence={
+                    "exact_text": "Plausible but unsupported supplier",
+                    "context": "Plausible but unsupported supplier",
+                    "role": "issuer",
+                    "page": 1,
+                    "left": 0.1,
+                    "top": 0.1,
+                    "right": 0.7,
+                    "bottom": 0.2,
+                },
+            ),
+            "",
+            extraction_method="ai_image_vision",
+            visual_evidence_text="unrelated pixels",
+        )
+
+        self.assertEqual(document["supplier"], "")
+        self.assertEqual(document["supplier_grounding"], "unsupported")
+
+    def test_recipient_scoped_vision_evidence_is_rejected(self):
+        document = ground_supplier_identity(
+            _invoice_document(
+                supplier="ניצת הדובדבן",
+                supplier_evidence={
+                    "exact_text": "ניצת הדובדבן",
+                    "context": "לכבוד ניצת הדובדבן",
+                    "role": "recipient",
+                    "page": 1,
+                },
+            ),
+            "",
+            extraction_method="ai_image_vision",
+        )
+
+        self.assertEqual(document["supplier"], "")
+        self.assertEqual(document["supplier_grounding"], "unsupported")
+        self.assertNotIn("supplier_evidence", document)
+
     def test_customer_name_is_not_accepted_as_supplier_evidence(self):
         document = ground_supplier_identity(
             _invoice_document(supplier="ניצת הדובדבן"),

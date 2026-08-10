@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from PIL import Image
@@ -118,6 +119,36 @@ class CloudExtractionParityTests(unittest.TestCase):
         self.assertEqual(content[1]["type"], "input_image")
         self.assertTrue(content[1]["image_url"].startswith("data:image/jpeg;base64,"))
         self.assertGreater(len(content[1]["image_url"]), len(original))
+
+    def test_visual_supplier_crop_is_reread_locally(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "supplier.jpg"
+            Image.new("RGB", (600, 400), "white").save(source, format="JPEG")
+            evidence = {
+                "page": 1,
+                "left": 0.1,
+                "top": 0.1,
+                "right": 0.6,
+                "bottom": 0.25,
+            }
+            with (
+                patch.object(ai_extractor, "_command_path", return_value="/usr/bin/tesseract"),
+                patch.object(
+                    ai_extractor,
+                    "_run",
+                    return_value=SimpleNamespace(stdout="רביע מדאם", returncode=0),
+                ) as run,
+            ):
+                text = ai_extractor.extract_visual_supplier_evidence_text(
+                    source,
+                    evidence,
+                )
+
+        self.assertEqual(text, "רביע מדאם")
+        command = run.call_args.args[0]
+        self.assertIn("tesseract", Path(command[0]).name)
+        self.assertIn("heb+eng", command)
+        self.assertIn("7", command)
 
     def test_streamlit_cloud_system_packages_are_declared_once(self):
         project = Path(__file__).resolve().parents[1]

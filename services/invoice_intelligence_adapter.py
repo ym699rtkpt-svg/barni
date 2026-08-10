@@ -91,7 +91,7 @@ def analyze_invoice_record(
 
     issues = set(invoice_record.get("machine_issues") or [])
     validations: dict[str, Any] = {}
-    if "vat_rate_mismatch" in issues:
+    if {"vat_rate_mismatch", "missing_vat_rate", "subtotal_mismatch"} & issues:
         validations["vat_warning"] = "The VAT rate needs your attention before approval."
 
     return analyze_invoice(InvoiceIntelligenceContext(

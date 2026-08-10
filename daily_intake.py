@@ -12,7 +12,12 @@ import pandas as pd
 import streamlit as st
 
 from database import duplicate_invoice, root_dir
-from hybrid_engine import extract_hybrid, normalize_document, validate_document
+from hybrid_engine import (
+    extract_hybrid,
+    normalize_document,
+    reconcile_extracted_financials,
+    validate_document,
+)
 from knowledge_engine.line_classifier import is_product_line
 from review_form import approve_to_database_detailed, document_review_form
 from services.barni_thinking import think_about_invoice
@@ -644,7 +649,7 @@ def _status_for(document: dict) -> str:
 
 def _saveable_review_document(document: dict) -> dict:
     """Revalidate owner corrections while retaining safe extraction limitations."""
-    updated = normalize_document(document)
+    updated = reconcile_extracted_financials(document)
     validation = validate_document(updated)
     updated["machine_issues"] = validation["machine_issues"]
     updated["model_notes"] = validation["model_notes"]
@@ -810,7 +815,7 @@ def process_files(
                 document["raw_text"] = raw_text
             document["local_text_method"] = local_method
             notify("supplier", index, total_files, safe_name)
-            document = normalize_document(document)
+            document = reconcile_extracted_financials(document)
             notify("products", index, total_files, safe_name)
             validation = validate_document(document)
             document["machine_issues"] = validation["machine_issues"]
