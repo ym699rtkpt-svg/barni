@@ -14,11 +14,14 @@ from unittest.mock import patch
 import pandas as pd
 from streamlit.testing.v1 import AppTest
 
+from database import init_database, insert_invoice
 from services.product_state import FirstFeedState
 from services.visible_learning import LearningSnapshot
 from daily_intake import _render_feed_styles, _render_upload_controls
 from ui.home import (
+    _available_home_months,
     _first_session_knowledge_summary,
+    _month_label,
     _monthly_activity,
     _order_home_priorities,
 )
@@ -333,14 +336,146 @@ class FirstFeedOnboardingUITests(unittest.TestCase):
                 app.run()
 
         self.assertFalse(app.exception)
+        current_label = _month_label(str(pd.Timestamp.now().to_period("M")))
         self.assertIn(
-            "Current calendar month only — separate from the total knowledge "
-            "Barni remembers above.",
+            f"{current_label} activity — separate from the total knowledge "
+            "Barni remembers.",
             [caption.value for caption in app.caption],
         )
         self.assertIn(
             "Products Barni knows (all time)",
             [metric.label for metric in app.metric],
+        )
+
+    def test_home_month_options_keep_current_month_first(self):
+        invoices = pd.DataFrame([
+            {"invoice_date": "2026-06-15"},
+            {"invoice_date": "2026-08-02"},
+            {"invoice_date": "2026-07-31"},
+            {"invoice_date": "not-a-date"},
+        ])
+
+        options = _available_home_months(
+            invoices,
+            current_month=pd.Period("2026-08", freq="M"),
+        )
+
+        self.assertEqual(options, ["2026-08", "2026-07", "2026-06"])
+        self.assertEqual([_month_label(month) for month in options], [
+            "August 2026",
+            "July 2026",
+            "June 2026",
+        ])
+
+    def test_historical_home_month_changes_only_month_scoped_metrics(self):
+        invoices = pd.DataFrame([
+            {
+                "id": 1,
+                "invoice_date": "2026-07-15",
+                "supplier": "July Supplier",
+                "total": 125.50,
+            },
+            {
+                "id": 2,
+                "invoice_date": "2026-07-28",
+                "supplier": "July Supplier",
+                "total": 74.50,
+            },
+            {
+                "id": 3,
+                "invoice_date": "2026-08-02",
+                "supplier": "August Supplier",
+                "total": 300.00,
+            },
+        ])
+        all_time_invoice_ids = invoices["id"].tolist()
+
+        _, count, spend, suppliers = _monthly_activity(
+            invoices,
+            current_month=pd.Period("2026-07", freq="M"),
+        )
+
+        self.assertEqual(count, 2)
+        self.assertEqual(spend, 200.00)
+        self.assertEqual(suppliers, 1)
+        self.assertEqual(invoices["id"].tolist(), all_time_invoice_ids)
+
+    def test_empty_home_month_returns_truthful_zero_state(self):
+        invoices = pd.DataFrame([{
+            "invoice_date": "2026-07-15",
+            "supplier": "Earlier Supplier",
+            "total": 125.50,
+        }])
+
+        month, count, spend, suppliers = _monthly_activity(
+            invoices,
+            current_month=pd.Period("2026-08", freq="M"),
+        )
+
+        self.assertTrue(month.empty)
+        self.assertEqual((count, spend, suppliers), (0, 0.0, 0))
+
+    def test_home_month_selector_updates_activity_without_changing_all_time_products(self):
+        current = pd.Timestamp.now().to_period("M")
+        historical = current - 1
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            environment = {
+                "BARNI_DATA_ROOT": str(root),
+                "OPENAI_API_KEY": "test-placeholder",
+            }
+            with patch.dict(os.environ, environment):
+                init_database(root / "invoice_archive.db")
+                documents = (
+                    ("current.pdf", current, "Current Supplier", "CURRENT", 300.0, "Current Item"),
+                    ("history-a.pdf", historical, "Earlier Supplier", "HIST-A", 125.5, "Earlier Item A"),
+                    ("history-b.pdf", historical, "Earlier Supplier", "HIST-B", 74.5, "Earlier Item B"),
+                )
+                for file_name, month, supplier, number, total, product in documents:
+                    source = root / file_name
+                    source.write_bytes(b"invoice source")
+                    insert_invoice(source, {
+                        "document_type": "חשבונית מס",
+                        "supplier": supplier,
+                        "supplier_id": number,
+                        "invoice_number": number,
+                        "invoice_date": f"{month}-15",
+                        "total": total,
+                        "currency": "ILS",
+                        "items": [{
+                            "description": product,
+                            "quantity": 1,
+                            "unit": "unit",
+                            "unit_price": total,
+                            "line_total": total,
+                        }],
+                    })
+                FirstFeedState(root / "product-state.json").complete(invoice_id=1)
+
+                app_path = Path(__file__).resolve().parents[1] / "app.py"
+                app = AppTest.from_file(str(app_path), default_timeout=10)
+                app.session_state["barni_entered"] = True
+                app.run()
+
+                selector = next(widget for widget in app.selectbox if widget.label == "Month")
+                self.assertEqual(selector.value, str(current))
+                current_metrics = {metric.label: metric.value for metric in app.metric}
+                self.assertEqual(current_metrics["Invoices"], "1")
+                self.assertEqual(current_metrics["Spend"], "₪300.00")
+                self.assertEqual(current_metrics["Suppliers"], "1")
+                self.assertEqual(current_metrics["Products Barni knows (all time)"], "3")
+
+                app = selector.select(str(historical)).run()
+                historical_metrics = {metric.label: metric.value for metric in app.metric}
+
+        self.assertFalse(app.exception)
+        self.assertEqual(historical_metrics["Invoices"], "2")
+        self.assertEqual(historical_metrics["Spend"], "₪200.00")
+        self.assertEqual(historical_metrics["Suppliers"], "1")
+        self.assertEqual(historical_metrics["Products Barni knows (all time)"], "3")
+        self.assertIn(
+            f"Business activity for {_month_label(str(historical))}.",
+            [caption.value for caption in app.caption],
         )
 
     def test_identity_review_stays_supporting_during_first_session(self):

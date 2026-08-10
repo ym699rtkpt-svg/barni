@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 import pandas as pd
 import streamlit as st
 from datetime import datetime
@@ -55,6 +56,15 @@ def _render_home_styles() -> None:
             border: 1px solid rgba(45, 70, 53, 0.10);
             border-radius: 16px;
             padding: 0.6rem 0.9rem;
+        }
+        .st-key-home_snapshot_month [data-baseweb="select"] > div {
+            min-height: 2.35rem;
+            background: #fcfbf7;
+            border-color: rgba(63, 91, 68, 0.18);
+        }
+        .st-key-home_snapshot_month label {
+            color: #59675e;
+            font-size: 0.78rem;
         }
         [class*="st-key-home_ask_query_suggestion_"] button {
             min-height: 1.8rem;
@@ -170,12 +180,39 @@ def _order_home_priorities(stories: list, *, first_session: bool) -> list:
     )
 
 
+def _available_home_months(
+    invoices: pd.DataFrame,
+    *,
+    current_month: pd.Period | None = None,
+) -> list[str]:
+    """Return current month first, followed by approved invoice months."""
+    current = current_month or pd.Timestamp.now().to_period("M")
+    represented: set[str] = set()
+    if not invoices.empty and "invoice_date" in invoices.columns:
+        dates = pd.to_datetime(invoices["invoice_date"], errors="coerce").dropna()
+        represented = set(dates.dt.to_period("M").astype(str))
+    current_value = str(current)
+    historical = sorted(
+        (month for month in represented if month != current_value),
+        reverse=True,
+    )
+    return [current_value, *historical]
+
+
+def _month_label(month: str) -> str:
+    try:
+        period = pd.Period(month, freq="M")
+    except (TypeError, ValueError):
+        return str(month)
+    return f"{calendar.month_name[period.month]} {period.year}"
+
+
 def _monthly_activity(
     invoices: pd.DataFrame,
     *,
     current_month: pd.Period | None = None,
 ) -> tuple[pd.DataFrame, int, float, int]:
-    """Return the existing calendar-month metrics as one testable presentation unit."""
+    """Return approved-invoice activity for one selected calendar month."""
     dated = invoices.copy()
     if dated.empty:
         dated["invoice_date_dt"] = pd.Series(dtype="datetime64[ns]")
@@ -190,8 +227,13 @@ def _monthly_activity(
         ]
 
     invoice_count = int(len(this_month))
+    totals = (
+        this_month["total"]
+        if "total" in this_month.columns
+        else pd.Series(index=this_month.index, dtype=float)
+    )
     monthly_spend = float(
-        pd.to_numeric(this_month.get("total"), errors="coerce").fillna(0).sum()
+        pd.to_numeric(totals, errors="coerce").fillna(0).sum()
     )
     supplier_count = int(
         this_month.get("supplier", pd.Series(dtype=str))
@@ -222,10 +264,6 @@ def render_home():
         _first_session_knowledge_summary(capture_learning_snapshot())
         if first_session
         else ""
-    )
-
-    _, invoice_count, monthly_spend, supplier_count = _monthly_activity(
-        invoices
     )
 
     product_items = items
@@ -302,18 +340,37 @@ def render_home():
     render_workflow_status(workflow, key_prefix="home_workflow")
 
     st.write("")
-    st.markdown("### Business Snapshot")
+    snapshot_heading, snapshot_selector = st.columns(
+        [2.4, 0.8],
+        gap="medium",
+        vertical_alignment="bottom",
+    )
+    with snapshot_heading:
+        st.markdown("### Business Snapshot")
+    month_options = _available_home_months(invoices)
+    with snapshot_selector:
+        selected_month = st.selectbox(
+            "Month",
+            month_options,
+            format_func=_month_label,
+            key="home_snapshot_month",
+        )
+    selected_month_label = _month_label(selected_month)
+    _, invoice_count, monthly_spend, supplier_count = _monthly_activity(
+        invoices,
+        current_month=pd.Period(selected_month, freq="M"),
+    )
     st.caption(
-        "Current calendar month only — separate from the total knowledge "
-        "Barni remembers above."
+        f"{selected_month_label} activity — separate from the total knowledge "
+        "Barni remembers."
         if first_session
-        else "Activity in the current calendar month only."
+        else f"Business activity for {selected_month_label}."
     )
     overview_columns = st.columns(4, gap="medium")
     overview = [
-        ("Invoices this month", f"{invoice_count:,}"),
-        ("Spend this month", _money(monthly_spend)),
-        ("Suppliers this month", f"{supplier_count:,}"),
+        ("Invoices", f"{invoice_count:,}"),
+        ("Spend", _money(monthly_spend)),
+        ("Suppliers", f"{supplier_count:,}"),
         ("Products Barni knows (all time)", f"{products_tracked:,}"),
     ]
     for index, (column, (label, value)) in enumerate(zip(overview_columns, overview)):
