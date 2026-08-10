@@ -20,6 +20,7 @@ _ISSUE_MESSAGES = {
     "vat_rate_mismatch": "The VAT details need a quick check.",
     "exempt_document_with_nonzero_vat": "The VAT details need a quick check.",
     "extraction_service_unavailable": "I couldn't read everything reliably.",
+    "supplier_requires_confirmation": "I'm not completely sure about this supplier.",
 }
 
 
@@ -55,7 +56,14 @@ def customer_review_reasons(
     raw_notes = document.get("model_notes") or ()
     if isinstance(raw_notes, str):
         raw_notes = (raw_notes,)
-    if any(str(note or "").strip() for note in raw_notes):
+    recognized_note = False
+    for note in raw_notes:
+        message = _ISSUE_MESSAGES.get(str(note or "").strip())
+        if message:
+            recognized_note = True
+            if message not in reasons:
+                reasons.append(message)
+    if any(str(note or "").strip() for note in raw_notes) and not recognized_note:
         message = "I couldn't read everything reliably."
         if message not in reasons:
             reasons.append(message)

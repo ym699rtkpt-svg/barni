@@ -1,10 +1,18 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from typing import Callable
 
 from ai_extractor import extract_with_ai
 from parser_engine import parse_invoice, extract_items
+from services.business_identity import (
+    BusinessIdentityRepository,
+    CanonicalSupplier,
+    normalize_identity_text,
+    normalize_vat_id,
+)
 from services.pilot_support import log_runtime_error
 
 
@@ -60,6 +68,103 @@ def _as_number(value):
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _source_contains_name(source_text: str, supplier_name: str) -> bool:
+    """Require the extracted supplier spelling to be visible in source text."""
+    candidate = normalize_identity_text(supplier_name)
+    source = _supplier_evidence_region(source_text)
+    if len(candidate.replace(" ", "")) < 3 or not source:
+        return False
+    return f" {candidate} " in f" {source} "
+
+
+def _source_contains_identifier(source_text: str, supplier_id: str) -> bool:
+    """Match a source-visible identifier without joining unrelated numbers."""
+    candidate = normalize_vat_id(supplier_id)
+    if len(candidate) < 5:
+        return False
+    source_identifiers = {
+        normalize_vat_id(value)
+        for value in re.findall(
+            r"(?<!\d)\d(?:[\s.\-/]?\d){4,}(?!\d)",
+            _supplier_evidence_region(source_text),
+        )
+    }
+    return candidate in source_identifiers
+
+
+def _supplier_evidence_region(source_text: str) -> str:
+    """Prefer the issuer header and exclude explicit recipient/customer blocks."""
+    source = normalize_identity_text(source_text)
+    boundaries = (
+        " לכבוד ",
+        " פרטי לקוח ",
+        " bill to ",
+        " customer ",
+    )
+    positions = [source.find(marker) for marker in boundaries]
+    positions = [position for position in positions if position >= 0]
+    return source[:min(positions)] if positions else source
+
+
+def ground_supplier_identity(
+    document: dict,
+    source_text: str,
+    *,
+    source_text_method: str = "",
+    identity_lookup: Callable[[str], CanonicalSupplier | None] | None = None,
+) -> dict:
+    """Fail closed unless supplier identity is traceable to source evidence.
+
+    A new supplier name must appear in locally derived source text. A supplier
+    ID may recover an established canonical identity only when that ID is also
+    visible in the source. Manual owner corrections happen later in Review and
+    therefore do not pass through this extraction-only gate.
+    """
+    grounded = dict(document)
+    supplier = _as_text(grounded.get("supplier"))
+    supplier_id = _as_text(grounded.get("supplier_id"))
+    id_is_visible = _source_contains_identifier(source_text, supplier_id)
+
+    if _source_contains_name(source_text, supplier):
+        if source_text_method in {"local_pdf_ocr", "local_image_ocr"}:
+            grounded["supplier_grounding"] = "ocr_source_text"
+            grounded["warnings"] = list(grounded.get("warnings") or []) + [
+                "supplier_requires_confirmation"
+            ]
+        else:
+            grounded["supplier_grounding"] = "visible_source_text"
+        if supplier_id and not id_is_visible:
+            grounded["supplier_id"] = ""
+        return grounded
+
+    canonical = None
+    if supplier_id and id_is_visible:
+        lookup = identity_lookup or (
+            lambda value: BusinessIdentityRepository().supplier_identity(
+                "", value, ensure=False
+            )
+        )
+        try:
+            canonical = lookup(supplier_id)
+        except Exception:
+            # Identity-memory availability must not turn a recoverable supplier
+            # uncertainty into a failed invoice extraction.
+            canonical = None
+
+    if canonical is not None:
+        grounded["supplier"] = canonical.canonical_name
+        grounded["supplier_id"] = canonical.vat_id or supplier_id
+        grounded["supplier_grounding"] = "approved_supplier_id"
+        return grounded
+
+    grounded["supplier"] = ""
+    grounded["supplier_confidence"] = 0.0
+    grounded["supplier_grounding"] = "unsupported"
+    if supplier_id and not id_is_visible:
+        grounded["supplier_id"] = ""
+    return grounded
 
 
 def normalize_document(document: dict) -> dict:
@@ -273,11 +378,18 @@ def extract_hybrid(
     raw_text: str = "",
     use_ai: bool = True,
     ai_model: str | None = None,
+    *,
+    source_text_method: str = "",
 ) -> tuple[dict, str]:
     if use_ai:
         try:
             document, method = extract_with_ai(path, model=ai_model)
             document = normalize_document(document)
+            document = ground_supplier_identity(
+                document,
+                raw_text,
+                source_text_method=source_text_method,
+            )
             validation = validate_document(document)
             document["machine_issues"] = validation["machine_issues"]
             document["model_notes"] = validation["model_notes"]
@@ -296,6 +408,11 @@ def extract_hybrid(
     parsed = parse_invoice(raw_text)
     items = extract_items(raw_text)
     document = _legacy_to_common(parsed, items)
+    document = ground_supplier_identity(
+        document,
+        raw_text,
+        source_text_method=source_text_method,
+    )
     validation = validate_document(document)
     document["machine_issues"] = validation["machine_issues"]
     document["model_notes"] = (

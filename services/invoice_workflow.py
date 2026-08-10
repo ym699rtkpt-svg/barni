@@ -488,6 +488,13 @@ class InvoiceWorkflowService:
         on_progress: Callable[[str], None] | None = None,
     ) -> ApprovalResult:
         notify = on_progress or (lambda _stage: None)
+        if not _text(document.get("supplier")):
+            return ApprovalResult(
+                False,
+                "I need the supplier before this invoice can enter Business Memory.",
+                "error",
+                None,
+            )
         operation_key = approval_operation_key(record, document)
         previous = self._operation(operation_key)
         if previous and previous["operation_status"] == "completed":

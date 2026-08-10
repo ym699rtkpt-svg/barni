@@ -78,6 +78,7 @@ def run(root: Path, output: Path, limit: int | None = None) -> dict:
             document, method = extract_hybrid(
                 path,
                 raw_text=text,
+                source_text_method="local_pdf_text" if text else "",
                 use_ai=True,
                 ai_model=os.environ.get("INVOICE_AI_MODEL", "gpt-5.6"),
             )

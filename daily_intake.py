@@ -803,6 +803,7 @@ def process_files(
                 document, method = extract_hybrid(
                     stored,
                     raw_text=raw_text,
+                    source_text_method=local_method,
                     use_ai=True,
                     ai_model=model,
                 )

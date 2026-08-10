@@ -185,6 +185,8 @@ Rules:
 1. Read Hebrew and English.
 2. Distinguish the supplier from the customer. The customer is often "מפגש הדייגים".
 3. Never invent a value. Use an empty string or null when the document does not support it.
+   For supplier, copy only a company name explicitly visible on the document. Never infer,
+   complete, translate, or guess a supplier name from general knowledge or similarity.
 4. Classify the document accurately: invoice, invoice/receipt, receipt, credit note,
    delivery note, monthly statement, payment request, or other.
 5. Credit-note amounts must be negative.
