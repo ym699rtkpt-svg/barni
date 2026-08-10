@@ -44,8 +44,9 @@ def approved_document_for_identical_source(
         if matched is None:
             return None
         items = connection.execute(
-            """SELECT item_code, description, quantity, unit, unit_price, line_total
-               FROM invoice_items WHERE invoice_id = ? AND line_type = 'product'
+            """SELECT item_code, description, quantity, unit, unit_price,
+                      line_total, line_type
+               FROM invoice_items WHERE invoice_id = ?
                ORDER BY id""",
             (matched["id"],),
         ).fetchall()

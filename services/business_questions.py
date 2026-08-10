@@ -6,6 +6,7 @@ from typing import Any
 
 import pandas as pd
 
+from knowledge_engine.line_classifier import is_product_line
 from database import (
     dashboard_data,
     month_summary,
@@ -29,8 +30,10 @@ def _product_descriptions() -> list[str]:
     items = dashboard_data()["items"]
     if items.empty or "description" not in items.columns:
         return []
-    if "line_type" in items.columns:
-        items = items[items["line_type"] == "product"]
+    if not items.empty:
+        items = items[
+            items.apply(lambda row: is_product_line(row.to_dict()), axis=1)
+        ]
     return sorted(
         {
             str(value).strip()

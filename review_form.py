@@ -155,7 +155,7 @@ def document_review_form(
                     f"בפועל {total:,.2f} ₪, הפרש {delta:+,.2f} ₪"
                 )
 
-        st.markdown("#### " + _review_label("Products", issues, "items"))
+        st.markdown("#### " + _review_label("Items & charges", issues, "items"))
         items = document.get("items", []) or []
         items_df = pd.DataFrame(items)
 
@@ -176,8 +176,8 @@ def document_review_form(
             width="stretch",
             key=f"{form_key}_items",
             column_config={
-                "item_code": "Product code",
-                "description": "Product",
+                "item_code": "Item code",
+                "description": "Description",
                 "quantity": st.column_config.NumberColumn("Quantity"),
                 "unit": "Unit",
                 "unit_price": st.column_config.NumberColumn(

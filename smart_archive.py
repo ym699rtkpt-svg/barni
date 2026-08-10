@@ -16,7 +16,14 @@ from services.invoice_workflow import (
     database_record_lifecycle,
     database_status_label,
 )
+from services.search_matching import (
+    SearchSuggestion,
+    build_search_suggestions,
+    contains_search_match,
+    search_suggestion_catalog,
+)
 from ui.barni_thinking import render_barni_thinking
+from ui.design_system import primary_workspace, render_page_header
 
 from database import (
     all_tags,
@@ -24,6 +31,7 @@ from database import (
     invoice_items,
     invoice_tags,
     search_invoices,
+    search_suggestion_rows,
     set_invoice_tags,
     suppliers,
     update_invoice,
@@ -42,22 +50,14 @@ def _memory_suggestions(product_names: list[str], supplier_names: list[str]) -> 
         for value in [*product_names, *supplier_names]
         if str(value).strip() and len(str(value).strip()) <= 36
     ]
-    return list(dict.fromkeys(values))[:6]
+    return list(dict.fromkeys(values))[:4]
 
 
 def _render_search_styles() -> None:
     st.markdown(
         """
         <style>
-        .st-key-search_spotlight {
-            background: #f8f4ea;
-            border: 1px solid rgba(45, 70, 53, 0.12);
-            border-radius: 22px;
-            padding: 1.45rem 1.6rem 1rem;
-            margin: 1rem 0 1.1rem;
-            box-shadow: 0 8px 28px rgba(36, 54, 43, 0.05);
-        }
-        .st-key-search_spotlight input {
+        .st-key-barni_primary_workspace_search input {
             font-size: 1.18rem;
             min-height: 3.65rem;
         }
@@ -70,7 +70,38 @@ def _render_search_styles() -> None:
         }
         .st-key-search_form [data-baseweb="input"] {
             border-radius: 14px 0 0 14px;
+            border: 1px solid rgba(49, 91, 61, 0.24);
             border-right: 0;
+            background: #fcfbf7;
+            box-shadow: none;
+            transition: border-color 150ms ease, box-shadow 150ms ease;
+        }
+        .st-key-search_form [data-baseweb="select"] > div {
+            min-height: 3.65rem;
+            border-radius: 14px 0 0 14px;
+            border: 1px solid rgba(49, 91, 61, 0.24);
+            border-right: 0;
+            background: #fcfbf7;
+            box-shadow: none;
+            transition: border-color 150ms ease, box-shadow 150ms ease;
+        }
+        .st-key-search_form [data-baseweb="input"]:hover {
+            border-color: rgba(49, 91, 61, 0.38);
+            border-right: 0;
+        }
+        .st-key-search_form [data-baseweb="select"] > div:hover {
+            border-color: rgba(49, 91, 61, 0.38);
+            border-right: 0;
+        }
+        .st-key-search_form [data-baseweb="input"]:focus-within {
+            border-color: #3f5b44;
+            border-right: 0;
+            box-shadow: 0 0 0 2px rgba(63, 91, 68, 0.12);
+        }
+        .st-key-search_form [data-baseweb="select"]:focus-within > div {
+            border-color: #3f5b44;
+            border-right: 0;
+            box-shadow: 0 0 0 2px rgba(63, 91, 68, 0.12);
         }
         .st-key-search_form .stButton button {
             min-height: 3.65rem;
@@ -78,6 +109,40 @@ def _render_search_styles() -> None:
             padding: 0 1.35rem;
             font-weight: 700;
             box-shadow: none;
+        }
+        .st-key-search_filter_control {
+            margin-top: .55rem;
+        }
+        .st-key-search_filter_control [data-testid="stExpander"] {
+            border: 0;
+            background: transparent;
+            box-shadow: none;
+        }
+        .st-key-search_filter_control [data-testid="stExpander"] details,
+        .st-key-search_filter_control [data-testid="stExpander"] summary {
+            border: 0;
+            background: transparent;
+        }
+        .st-key-search_filter_control [data-testid="stExpander"] summary {
+            width: fit-content;
+            min-height: 2.15rem;
+            padding: .3rem .65rem;
+            color: #405248;
+            background: #fcfbf7;
+            border: 1px solid rgba(45, 70, 53, 0.15);
+            border-radius: 9px;
+            font-size: .8rem;
+            font-weight: 600;
+        }
+        .st-key-search_filter_control [data-testid="stExpander"] summary:hover {
+            color: #315b3d;
+            background: #f1f4ed;
+            border-color: rgba(49, 91, 61, 0.24);
+        }
+        .st-key-search_filter_control [data-testid="stExpanderDetails"] {
+            margin-top: .65rem;
+            padding: .75rem .05rem .05rem;
+            border-top: 1px solid rgba(45, 70, 53, 0.10);
         }
         .st-key-search_summary {
             max-width: 760px;
@@ -89,6 +154,19 @@ def _render_search_styles() -> None:
             border-radius: 14px;
         }
         .st-key-search_summary p { margin: 0; }
+        .st-key-search_live_suggestions {
+            max-width: 760px;
+            margin: -.35rem 0 .8rem;
+        }
+        .st-key-search_live_suggestions .stButton button {
+            justify-content: flex-start;
+            min-height: 2.35rem;
+            padding: .35rem .7rem;
+            border-color: rgba(45, 70, 53, 0.10);
+            background: #fcfbf7;
+            color: #315b3d;
+            font-weight: 500;
+        }
         [class*="st-key-search_card_"] {
             background: #fcfbf7;
             border: 1px solid rgba(45, 70, 53, 0.10);
@@ -112,16 +190,16 @@ def _render_search_styles() -> None:
         [class*="st-key-recent_result_"] {
             position: relative;
             width: 100%;
-            margin: 0 0 .65rem 0;
+            margin: 0 0 .45rem 0;
         }
         [class*="st-key-recent_result_"] .recent-card-body {
-            min-height: 86px;
+            min-height: 80px;
             position: relative;
             display: flex;
             flex-direction: column;
             justify-content: center;
             gap: .02rem;
-            padding: .65rem 2.5rem .65rem .9rem;
+            padding: .55rem 2.5rem .55rem .9rem;
             overflow: hidden;
             background: #fcfbf7;
             border: 1px solid rgba(45, 70, 53, 0.11);
@@ -178,7 +256,7 @@ def _render_search_styles() -> None:
             height: 100%;
         }
         [class*="st-key-recent_result_"] .stButton button {
-            min-height: 86px;
+            min-height: 80px;
             padding: 0;
             cursor: pointer;
             opacity: 0;
@@ -287,25 +365,24 @@ def _render_search_styles() -> None:
             margin-bottom: 0;
         }
         .st-key-search_suggestions {
-            width: min(100%, 700px);
-            margin: -.25rem 0 .85rem;
+            width: min(100%, 620px);
+            margin: -.1rem 0 .75rem;
         }
         .st-key-search_suggestions [data-testid="stHorizontalBlock"] {
             gap: .45rem;
         }
         .st-key-search_suggestions .stButton button {
-            min-height: 2.1rem;
-            padding: .3rem .75rem;
-            border-radius: 999px;
-            background: #f1f4ed;
-            border-color: rgba(49, 91, 61, 0.10);
-            color: #315b3d;
-            font-size: .8rem;
-            font-weight: 600;
+            min-height: 1.95rem;
+            padding: .25rem .65rem;
+            border-radius: 9px;
+            background: transparent;
+            border-color: rgba(49, 91, 61, 0.12);
+            color: #59675e;
+            font-size: .77rem;
+            font-weight: 500;
         }
         .st-key-search_suggestions .stButton button:hover {
-            transform: translateY(-1px);
-            background: #e7eee2;
+            background: #f1f4ed;
             border-color: rgba(49, 91, 61, 0.20);
         }
         </style>
@@ -378,7 +455,32 @@ def _open_business_memory() -> None:
 
 def _apply_search_suggestion(query: str) -> None:
     st.session_state.search_query = query
+    st.session_state.search_memory_input = query
     _clear_selection()
+
+
+def _open_live_suggestion(invoice_id: int) -> None:
+    _set_selection("invoice", invoice_id)
+
+
+def _format_memory_search_option(value: SearchSuggestion | str) -> str:
+    if isinstance(value, SearchSuggestion):
+        return f"{value.label} · {value.kind}"
+    return str(value)
+
+
+def _apply_memory_search_input() -> None:
+    value = st.session_state.get("search_memory_input")
+    if isinstance(value, SearchSuggestion):
+        st.session_state.search_query = value.label
+        _open_live_suggestion(value.invoice_id)
+        return
+    st.session_state.search_query = str(value or "").strip()
+    _clear_selection()
+
+
+def _submit_memory_search() -> None:
+    _apply_memory_search_input()
 
 
 def _search_summary(
@@ -451,14 +553,16 @@ def _recent_invoice_card(invoice: pd.Series) -> None:
 def _matching_products(results: pd.DataFrame, query: str) -> list[dict]:
     if results.empty or not query.strip():
         return []
-    needle = query.strip().casefold()
     matches: dict[str, list[dict]] = {}
     for _, invoice in results.iterrows():
         for _, item in invoice_items(int(invoice["id"])).iterrows():
             description = str(item.get("description") or "").strip()
             code = str(item.get("item_code") or "").strip()
             canonical_name = str(item.get("canonical_product_name") or "").strip()
-            if not any(needle in value.casefold() for value in (description, code, canonical_name)):
+            if not any(
+                contains_search_match(value, query)
+                for value in (description, code, canonical_name)
+            ):
                 continue
             matches.setdefault(canonical_name or description or code or "Product", []).append(
                 {**item.to_dict(), "invoice": invoice.to_dict()}
@@ -705,70 +809,118 @@ def _render_empty_state() -> None:
 
 def render_database_archive() -> None:
     _render_search_styles()
-    st.markdown("## Search")
-    st.caption("Find anything Barni remembers.")
+    render_page_header(
+        "Search",
+        "Search suppliers, products, invoices or dates.",
+        key="search",
+    )
 
     st.session_state.setdefault("search_query", "")
-    with st.container(key="search_spotlight"):
+    all_supplier_names = suppliers()
+    identities = BusinessIdentityRepository()
+    identities.sync_existing_memory()
+    memory_catalog = search_suggestion_catalog(search_suggestion_rows())
+    with primary_workspace(key="search"):
         with st.container(key="search_form"):
             search_field, search_action = st.columns([6, 1.15], gap="small")
-            query = search_field.text_input(
+            search_field.selectbox(
                 "Search",
-                key="search_query",
+                memory_catalog,
+                index=None,
+                key="search_memory_input",
                 placeholder="Search invoices, suppliers, products or dates...",
-                autocomplete="off",
                 label_visibility="collapsed",
-                on_change=_clear_selection,
-            ).strip()
+                accept_new_options=True,
+                filter_mode="fuzzy",
+                format_func=_format_memory_search_option,
+                on_change=_apply_memory_search_input,
+            )
             search_action.button(
                 "Search",
                 type="primary",
                 width="stretch",
-                on_click=_clear_selection,
+                on_click=_submit_memory_search,
             )
+            query = str(st.session_state.get("search_query") or "").strip()
+
+        with st.container(key="search_filter_control"):
+            with st.expander(
+                "Advanced filters",
+                expanded=False,
+                icon=":material/tune:",
+            ):
+                with st.container(key="search_filters"):
+                    row0 = st.columns(4)
+                    supplier_choice = row0[0].selectbox(
+                        "Supplier",
+                        ["All suppliers"] + all_supplier_names,
+                    )
+                    invoice_query = row0[1].text_input(
+                        "Invoice number",
+                        autocomplete="off",
+                    )
+                    selected_tags = row0[2].multiselect("Tags", options=all_tags())
+                    document_types = row0[3].multiselect(
+                        "Document type",
+                        DOCUMENT_TYPES,
+                    )
+
+                    row1 = st.columns([1.25, 1.15, .8, .95, 1, 1, 1, 1])
+                    statuses = row1[0].multiselect(
+                        "Status",
+                        ["approved", "review", "rejected"],
+                        default=["approved"],
+                        format_func=database_status_label,
+                    )
+                    sort_label = row1[1].selectbox(
+                        "Sort by",
+                        ["Date", "Supplier", "Amount", "Invoice number"],
+                    )
+                    descending = row1[2].toggle("Newest first", value=True)
+                    date_mode = row1[3].checkbox("Date range")
+                    start_date = row1[4].date_input("From", disabled=not date_mode)
+                    end_date = row1[5].date_input("To", disabled=not date_mode)
+                    min_total = row1[6].number_input(
+                        "Minimum",
+                        value=0.0,
+                        step=1.0,
+                    )
+                    max_total = row1[7].number_input(
+                        "Maximum",
+                        value=10_000_000.0,
+                        step=100.0,
+                    )
+
+    if query and st.session_state.get("search_selected_kind") is None:
+        live_suggestions = build_search_suggestions(query, search_suggestion_rows())
+        if live_suggestions:
+            with st.container(key="search_live_suggestions"):
+                st.caption("Suggestions")
+                for index, suggestion in enumerate(live_suggestions):
+                    detail = f" · {suggestion.detail}" if suggestion.detail else ""
+                    st.button(
+                        f"{suggestion.kind} · {suggestion.label}{detail}",
+                        key=f"open_live_suggestion_{index}_{suggestion.invoice_id}",
+                        on_click=_open_live_suggestion,
+                        args=(suggestion.invoice_id,),
+                        width="stretch",
+                    )
 
     if not query:
         with st.container(key="search_suggestions"):
             st.caption("Suggested searches")
-            identities = BusinessIdentityRepository()
             product_names = [value.canonical_name for value in identities.products()]
             supplier_names = suppliers()
             suggestions = _memory_suggestions(product_names, supplier_names)
-            suggestion_columns = st.columns(3)
+            suggestion_columns = st.columns(max(1, len(suggestions)))
             for index, suggestion in enumerate(suggestions):
-                suggestion_columns[index % 3].button(
+                suggestion_columns[index].button(
                     suggestion,
                     key=f"search_suggestion_{index}",
                     on_click=_apply_search_suggestion,
                     args=(suggestion,),
                     width="stretch",
                 )
-
-    all_supplier_names = suppliers()
-    with st.expander("Advanced filters", expanded=False):
-        with st.container(key="search_filters"):
-            row0 = st.columns(4)
-            supplier_choice = row0[0].selectbox("Supplier", ["All suppliers"] + all_supplier_names)
-            invoice_query = row0[1].text_input("Invoice number", autocomplete="off")
-            selected_tags = row0[2].multiselect("Tags", options=all_tags())
-            document_types = row0[3].multiselect("Document type", DOCUMENT_TYPES)
-
-            row1 = st.columns([1.25, 1.15, .8, .95, 1, 1, 1, 1])
-            statuses = row1[0].multiselect(
-                "Status",
-                ["approved", "review", "rejected"],
-                default=["approved"],
-                format_func=database_status_label,
-            )
-            sort_label = row1[1].selectbox(
-                "Sort by", ["Date", "Supplier", "Amount", "Invoice number"]
-            )
-            descending = row1[2].toggle("Newest first", value=True)
-            date_mode = row1[3].checkbox("Date range")
-            start_date = row1[4].date_input("From", disabled=not date_mode)
-            end_date = row1[5].date_input("To", disabled=not date_mode)
-            min_total = row1[6].number_input("Minimum", value=0.0, step=1.0)
-            max_total = row1[7].number_input("Maximum", value=10_000_000.0, step=100.0)
 
     has_filters = any([
         supplier_choice != "All suppliers", invoice_query.strip(), selected_tags,
@@ -802,7 +954,9 @@ def render_database_archive() -> None:
 
     all_invoices = search_invoices(statuses=[])
     query_start, query_end, period_label = _date_query(query, all_invoices)
-    matched_doc_types = [kind for kind in DOCUMENT_TYPES if query.casefold() in kind.casefold()] if query else []
+    matched_doc_types = [
+        kind for kind in DOCUMENT_TYPES if contains_search_match(kind, query)
+    ] if query else []
     text_query = "" if query_start or matched_doc_types else query
     sort_map = {"Date": "invoice_date", "Supplier": "supplier", "Amount": "total", "Invoice number": "invoice_number"}
     results = search_invoices(
@@ -823,7 +977,9 @@ def render_database_archive() -> None:
     products = _matching_products(results, query) if text_query else []
     supplier_matches = []
     if query:
-        supplier_matches = [name for name in all_supplier_names if query.casefold() in name.casefold()]
+        supplier_matches = [
+            name for name in all_supplier_names if contains_search_match(name, query)
+        ]
 
     with st.container(key="search_summary"):
         st.write(_search_summary(query, results, supplier_matches, products))
@@ -846,8 +1002,8 @@ def render_database_archive() -> None:
     ocr_matches = pd.DataFrame()
     if "raw_text" in results.columns and query:
         ocr_matches = results[
-            results["raw_text"].fillna("").astype(str).str.contains(
-                query, case=False, regex=False
+            results["raw_text"].fillna("").astype(str).map(
+                lambda value: contains_search_match(value, query)
             )
         ]
     invoice_results = results

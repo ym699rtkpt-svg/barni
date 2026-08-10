@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import inspect
 import unittest
 
+from daily_intake import _render_review_step
 from services.barni_thinking import BarniThinking, ThinkingSection
+from smart_archive import _render_invoice_detail
 from ui.barni_thinking import _narrative_conclusion
 
 
@@ -35,6 +38,27 @@ class NarrativeReviewTests(unittest.TestCase):
         conclusion, tone = _narrative_conclusion(self._thinking())
         self.assertEqual(conclusion, "Olive oil increased 14%.")
         self.assertEqual(tone, "neutral")
+
+    def test_technical_details_remain_available_and_collapsed(self):
+        search_detail = inspect.getsource(_render_invoice_detail)
+        review_detail = inspect.getsource(_render_review_step)
+
+        self.assertIn(
+            'st.expander("Advanced Details", expanded=False)',
+            search_detail,
+        )
+        self.assertIn(
+            'st.expander("Technical Details", expanded=False)',
+            search_detail,
+        )
+        self.assertIn(
+            'st.expander("Technical confidence details", expanded=False)',
+            review_detail,
+        )
+        self.assertLess(
+            search_detail.index('st.markdown("### Original invoice")'),
+            search_detail.index('st.expander("Advanced Details"'),
+        )
 
 
 if __name__ == "__main__":

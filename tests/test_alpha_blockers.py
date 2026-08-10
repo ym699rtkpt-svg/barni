@@ -96,7 +96,7 @@ class AlphaBlockerTests(unittest.TestCase):
         self.assertIn("supplier", blockers)
         self.assertIn("invoice date", blockers)
         self.assertIn("total", blockers)
-        self.assertIn("at least one product", blockers)
+        self.assertIn("at least one invoice line", blockers)
 
     def test_populated_receipt_can_be_approved_without_products(self):
         self.assertEqual(_approval_blockers({

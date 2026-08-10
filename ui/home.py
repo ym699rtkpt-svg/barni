@@ -5,8 +5,10 @@ import streamlit as st
 from datetime import datetime
 
 from database import dashboard_data
+from knowledge_engine.line_classifier import is_product_line
 from services.invoice_workflow import approved_documents, invoice_workflow_snapshot
 from services.business_stories import BusinessStoryEngine, StoryContext
+from services.visible_learning import LearningSnapshot, capture_learning_snapshot
 from ui.workflow_status import render_workflow_status
 from ui.business_story import render_business_story
 
@@ -126,6 +128,8 @@ def _metric_card(label: str, value: str, key: str) -> None:
 
 
 def _go_to(page: str) -> None:
+    if page == "קליטה יומית":
+        st.session_state["daily_intake_show_uploader"] = True
     st.session_state.current_page = page
     st.rerun()
 
@@ -136,6 +140,66 @@ def _money(value: float) -> str:
 
 def _count_phrase(count: int, singular: str, plural: str | None = None) -> str:
     return f"{count} {singular if count == 1 else (plural or singular + 's')}"
+
+
+def _first_session_knowledge_summary(snapshot: LearningSnapshot) -> str:
+    facts = [
+        _count_phrase(snapshot.suppliers, "supplier"),
+        _count_phrase(snapshot.products, "product"),
+        _count_phrase(snapshot.invoices, "approved invoice"),
+    ]
+    facts = [fact for fact, count in zip(
+        facts,
+        (snapshot.suppliers, snapshot.products, snapshot.invoices),
+    ) if count > 0]
+    if not facts:
+        return "I've started remembering your business."
+    if len(facts) == 1:
+        remembered = facts[0]
+    else:
+        remembered = f"{', '.join(facts[:-1])}, and {facts[-1]}"
+    return f"I now remember {remembered}."
+
+
+def _order_home_priorities(stories: list, *, first_session: bool) -> list:
+    if not first_session:
+        return stories
+    return sorted(
+        stories,
+        key=lambda story: story.story_type == "identity_review_needed",
+    )
+
+
+def _monthly_activity(
+    invoices: pd.DataFrame,
+    *,
+    current_month: pd.Period | None = None,
+) -> tuple[pd.DataFrame, int, float, int]:
+    """Return the existing calendar-month metrics as one testable presentation unit."""
+    dated = invoices.copy()
+    if dated.empty:
+        dated["invoice_date_dt"] = pd.Series(dtype="datetime64[ns]")
+        this_month = dated
+    else:
+        dated["invoice_date_dt"] = pd.to_datetime(
+            dated["invoice_date"], errors="coerce"
+        )
+        month = current_month or pd.Timestamp.now().to_period("M")
+        this_month = dated[
+            dated["invoice_date_dt"].dt.to_period("M") == month
+        ]
+
+    invoice_count = int(len(this_month))
+    monthly_spend = float(
+        pd.to_numeric(this_month.get("total"), errors="coerce").fillna(0).sum()
+    )
+    supplier_count = int(
+        this_month.get("supplier", pd.Series(dtype=str))
+        .replace("", pd.NA)
+        .dropna()
+        .nunique()
+    )
+    return this_month, invoice_count, monthly_spend, supplier_count
 
 
 def render_home():
@@ -151,33 +215,27 @@ def render_home():
         StoryContext(since=datetime.now().strftime("%Y-%m-%dT00:00:00")),
         max_stories=3,
     )
-
-    if invoices.empty:
-        invoices["invoice_date_dt"] = pd.Series(dtype="datetime64[ns]")
-        this_month = invoices
-    else:
-        invoices["invoice_date_dt"] = pd.to_datetime(
-            invoices["invoice_date"], errors="coerce"
-        )
-        current_month = pd.Timestamp.now().to_period("M")
-        this_month = invoices[
-            invoices["invoice_date_dt"].dt.to_period("M") == current_month
-        ]
-
-    invoice_count = int(len(this_month))
-    monthly_spend = float(
-        pd.to_numeric(this_month.get("total"), errors="coerce").fillna(0).sum()
+    first_session = bool(
+        st.session_state.get("barni_first_session_home_active")
     )
-    supplier_count = int(
-        this_month.get("supplier", pd.Series(dtype=str))
-        .replace("", pd.NA)
-        .dropna()
-        .nunique()
+    first_session_summary = (
+        _first_session_knowledge_summary(capture_learning_snapshot())
+        if first_session
+        else ""
+    )
+
+    _, invoice_count, monthly_spend, supplier_count = _monthly_activity(
+        invoices
     )
 
     product_items = items
-    if not product_items.empty and "line_type" in product_items.columns:
-        product_items = product_items[product_items["line_type"] == "product"]
+    if not product_items.empty:
+        product_items = product_items[
+            product_items.apply(
+                lambda row: is_product_line(row.to_dict()),
+                axis=1,
+            )
+        ]
     products_tracked = int(
         product_items.get("description", pd.Series(dtype=str))
         .fillna("")
@@ -216,8 +274,12 @@ def render_home():
         )
         with hero_copy:
             st.caption("BARNI · YOUR BUSINESS ASSISTANT")
-            st.markdown("## Welcome back")
-            st.write(status_line)
+            if first_session:
+                st.markdown("## I know a little about your business now.")
+                st.write(first_session_summary)
+            else:
+                st.markdown("## Welcome back")
+                st.write(status_line)
         with hero_action:
             if st.button(
                 "Continue invoice review"
@@ -241,13 +303,18 @@ def render_home():
 
     st.write("")
     st.markdown("### Business Snapshot")
-    st.caption("This month at a glance")
+    st.caption(
+        "Current calendar month only — separate from the total knowledge "
+        "Barni remembers above."
+        if first_session
+        else "Activity in the current calendar month only."
+    )
     overview_columns = st.columns(4, gap="medium")
     overview = [
         ("Invoices this month", f"{invoice_count:,}"),
         ("Spend this month", _money(monthly_spend)),
         ("Suppliers this month", f"{supplier_count:,}"),
-        ("Products tracked", f"{products_tracked:,}"),
+        ("Products Barni knows (all time)", f"{products_tracked:,}"),
     ]
     for index, (column, (label, value)) in enumerate(zip(overview_columns, overview)):
         with column:
@@ -265,7 +332,10 @@ def render_home():
         if key not in seen:
             seen.add(key)
             unique_cards.append(story)
-    priority_cards = unique_cards[:3]
+    priority_cards = _order_home_priorities(
+        unique_cards,
+        first_session=first_session,
+    )[:3]
     priority_columns = st.columns(len(priority_cards), gap="medium")
     for index, (column, story) in enumerate(zip(priority_columns, priority_cards)):
         with column:

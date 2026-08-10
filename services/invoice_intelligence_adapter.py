@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Mapping, Sequence
 
 from database import search_invoices
+from knowledge_engine.line_classifier import is_product_line
 from services.business_facts import ComparablePriceLedger
 from services.business_identity import BusinessIdentityRepository, normalize_unit
 from services.invoice_intelligence import (
@@ -62,7 +63,7 @@ def analyze_invoice_record(
     price_histories: dict[str, list[dict[str, Any]]] = {}
     for item in item_records:
         description = str(item.get("description") or "").strip()
-        if not description:
+        if not description or not is_product_line(item):
             continue
         product_identity = identities.product_identity(description, ensure=False)
         if product_identity is not None:

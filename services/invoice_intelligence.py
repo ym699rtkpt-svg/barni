@@ -5,6 +5,7 @@ from datetime import datetime
 import re
 from statistics import median
 from typing import Any, Iterable, Mapping, Protocol, Sequence
+from knowledge_engine.line_classifier import is_product_line
 from services.evidence import (
     Claim, Confidence, ConfidenceStatus, ConfidenceType, EvidenceRef,
     LOCAL_BUSINESS_ID, invoice_ref,
@@ -366,7 +367,7 @@ class ProductKnowledgeRule:
         new_products: list[str] = []
         for item in context.items:
             description = _product_name(item)
-            if not description or _text(item.get("line_type") or "product") != "product":
+            if not description or not is_product_line(item):
                 continue
             if _number(item.get("quantity")) is None or _number(item.get("unit_price")) is None:
                 continue
@@ -412,7 +413,7 @@ class SupplierProductNoveltyRule:
         current_id = int(current.get("id") or 0)
         for item in context.items:
             description = _product_name(item)
-            if not description or _text(item.get("line_type") or "product") != "product":
+            if not description or not is_product_line(item):
                 continue
             history = [
                 row for row in context.price_histories.get(description, ())

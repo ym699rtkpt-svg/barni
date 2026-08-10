@@ -8,6 +8,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from database import connect
 from services.business_facts import ComparablePriceLedger
+from services.business_identity import BusinessIdentityRepository
 from services.evidence import (
     Claim, Confidence, ConfidenceStatus, ConfidenceType, LOCAL_BUSINESS_ID,
     invoice_ref,
@@ -100,6 +101,7 @@ class BusinessStoryEngine:
     def __init__(self, connection_factory: Callable[[], sqlite3.Connection] = connect) -> None:
         self._connect = connection_factory
         self.ledger = ComparablePriceLedger(connection_factory)
+        self.identities = BusinessIdentityRepository(connection_factory)
 
     def generate(
         self,
@@ -285,8 +287,13 @@ class BusinessStoryEngine:
                     ORDER BY datetime(occurred_at) DESC, purchase_count DESC""",
                 (value,),
             ).fetchall()
+        qualifying_product_ids = {
+            product.id for product in self.identities.products()
+        }
         results = []
         for row in rows:
+            if int(row["product_id"]) not in qualifying_product_ids:
+                continue
             invoice_ids = tuple(
                 int(value) for value in str(row["invoice_ids"] or "").split(",") if value
             )

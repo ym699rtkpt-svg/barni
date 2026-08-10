@@ -32,9 +32,63 @@ def _render_styles() -> None:
             border-radius: 16px;
             padding: 0.85rem 1rem;
         }
+        .st-key-insights_low_data {
+            max-width: 760px;
+            background: #f7f3e9;
+            border: 1px solid rgba(45, 70, 53, 0.12);
+            border-radius: 16px;
+            padding: 1rem 1.15rem .85rem;
+        }
         </style>
         """,
         unsafe_allow_html=True,
+    )
+
+
+def _has_spend_trend_evidence(monthly: pd.DataFrame) -> bool:
+    """A time trend requires spending observations in two distinct months."""
+    return (
+        not monthly.empty
+        and "month" in monthly.columns
+        and monthly["month"].replace("", pd.NA).dropna().nunique() >= 2
+    )
+
+
+def _supplier_comparison_data(documents: pd.DataFrame) -> pd.DataFrame:
+    """Compare only suppliers supported by repeat approved purchases."""
+    if documents.empty or not {"supplier", "total"}.issubset(documents.columns):
+        return pd.DataFrame(columns=["supplier", "total", "invoice_count"])
+    values = documents.copy()
+    values["supplier"] = values["supplier"].fillna("").astype(str).str.strip()
+    values = values[values["supplier"] != ""]
+    values["total"] = pd.to_numeric(values["total"], errors="coerce").fillna(0)
+    comparison = (
+        values.groupby("supplier")["total"]
+        .agg(total="sum", invoice_count="count")
+        .reset_index()
+    )
+    comparison = comparison[comparison["invoice_count"] >= 2]
+    if len(comparison) < 2:
+        return comparison.iloc[0:0]
+    return comparison.sort_values("total", ascending=False).head(10)
+
+
+def _meaningful_category_data(documents: pd.DataFrame) -> pd.DataFrame:
+    """Keep raw records intact while suppressing mostly-uncategorized analysis."""
+    columns = ["category", "subcategory", "documents_count", "total"]
+    if documents.empty or "category" not in documents.columns:
+        return pd.DataFrame(columns=columns)
+    values = documents.copy()
+    normalized = values["category"].fillna("").astype(str).str.strip().str.casefold()
+    unknown = normalized.isin({"", "לא מסווג", "uncategorized", "not classified"})
+    if int((~unknown).sum()) <= int(unknown.sum()):
+        return pd.DataFrame(columns=columns)
+    values = values[~unknown].copy()
+    return (
+        values.groupby(["category", "subcategory"], dropna=False)["total"]
+        .agg(documents_count="count", total="sum")
+        .reset_index()
+        .sort_values("total", ascending=False)
     )
 
 
@@ -86,7 +140,7 @@ def render_enhanced_dashboard() -> None:
     documents = approved_documents()
     if documents.empty:
         monthly = pd.DataFrame(columns=["month", "total"])
-        supplier_spend = pd.DataFrame(columns=["supplier", "total"])
+        supplier_spend = pd.DataFrame(columns=["supplier", "total", "invoice_count"])
         document_types = pd.DataFrame(columns=["document_type", "count"])
         categories = pd.DataFrame(columns=["category", "subcategory", "documents_count", "total"])
     else:
@@ -95,9 +149,9 @@ def render_enhanced_dashboard() -> None:
         documents["_date"] = pd.to_datetime(documents["invoice_date"], errors="coerce")
         documents["month"] = documents["_date"].dt.to_period("M").astype(str)
         monthly = documents.groupby("month")["total"].sum().reset_index().sort_values("month")
-        supplier_spend = documents.groupby("supplier")["total"].sum().sort_values(ascending=False).reset_index().head(10)
+        supplier_spend = _supplier_comparison_data(documents)
         document_types = documents["document_type"].replace("", "Not identified").value_counts().rename_axis("document_type").reset_index(name="count")
-        categories = documents.groupby(["category", "subcategory"], dropna=False)["total"].agg(documents_count="count", total="sum").reset_index().sort_values("total", ascending=False)
+        categories = _meaningful_category_data(documents)
 
     if documents.empty:
         st.write("")
@@ -115,15 +169,21 @@ def render_enhanced_dashboard() -> None:
     with left:
         with st.container(key="insights_chart_monthly"):
             st.markdown("#### Spend by month")
-            if monthly.empty:
-                st.caption("No dated purchasing history is available yet.")
+            if not _has_spend_trend_evidence(monthly):
+                st.caption(
+                    "Barni is still learning. Spending across another month will "
+                    "make this trend useful."
+                )
             else:
                 st.line_chart(monthly.set_index("month")["total"], height=260)
     with right:
         with st.container(key="insights_chart_suppliers"):
             st.markdown("#### Top suppliers")
             if supplier_spend.empty:
-                st.caption("No supplier spend is available yet.")
+                st.caption(
+                    "Barni is still learning. A useful comparison needs repeat "
+                    "purchases from more than one supplier."
+                )
             else:
                 st.bar_chart(supplier_spend.set_index("supplier")["total"], height=260)
 
@@ -133,7 +193,9 @@ def render_enhanced_dashboard() -> None:
     category_tab, document_tab = st.tabs(["Categories", "Document types"])
     with category_tab:
         if categories.empty:
-            st.caption("No categories have been learned yet.")
+            st.caption(
+                "Barni does not yet have enough reliable category information."
+            )
         else:
             st.dataframe(categories, hide_index=True, width="stretch")
     with document_tab:

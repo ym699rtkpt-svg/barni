@@ -1,6 +1,6 @@
 
 from __future__ import annotations
-from knowledge_engine.line_classifier import classify_invoice_line
+from knowledge_engine.line_classifier import classify_invoice_item, is_product_line
 import json
 import os
 import re
@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from services.search_matching import contains_search_match
 
 
 def root_dir() -> Path:
@@ -41,6 +42,12 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     connection = sqlite3.connect(db_path)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    connection.create_function(
+        "barni_contains",
+        2,
+        lambda candidate, query: int(contains_search_match(candidate, query)),
+        deterministic=True,
+    )
     return connection
 
 
@@ -104,12 +111,13 @@ def _record_schema_version(
 
 def _backfill_line_types(connection: sqlite3.Connection) -> None:
     rows = connection.execute(
-        "SELECT id, description, line_type FROM invoice_items"
+        """SELECT id, description, quantity, unit_price, line_total, line_type
+           FROM invoice_items"""
     ).fetchall()
 
     for row in rows:
         stored = _text(row["line_type"])
-        expected = classify_invoice_line(_text(row["description"]))
+        expected = classify_invoice_item(dict(row))
         if stored != expected:
             connection.execute(
                 "UPDATE invoice_items SET line_type = ? WHERE id = ?",
@@ -893,7 +901,7 @@ def replace_duplicate_invoice(
                         _text(item.get("description")), _number(item.get("quantity")),
                         _text(item.get("unit")), _number(item.get("unit_price")),
                         _number(item.get("line_total")),
-                        classify_invoice_line(_text(item.get("description"))),
+                        classify_invoice_item(item),
                     ),
                 )
             connection.commit()
@@ -992,7 +1000,7 @@ def insert_invoice(
                     _text(item.get("unit")),
                     _number(item.get("unit_price")),
                     _number(item.get("line_total")),
-                    classify_invoice_line(_text(item.get("description"))),
+                    classify_invoice_item(item),
                 ),
             )
 
@@ -1072,7 +1080,7 @@ def replace_items(invoice_id: int, items: list[dict]) -> None:
                     _text(item.get("unit")),
                     _number(item.get("unit_price")),
                     _number(item.get("line_total")),
-                    classify_invoice_line(_text(item.get("description"))),
+                    classify_invoice_item(item),
                 ),
             )
         connection.commit()
@@ -1169,15 +1177,15 @@ def search_invoices(
         clauses.append(
             """
             (
-                invoices.supplier LIKE ?
-                OR canonical_suppliers.canonical_name LIKE ?
+                barni_contains(invoices.supplier, ?) = 1
+                OR barni_contains(canonical_suppliers.canonical_name, ?) = 1
                 OR EXISTS (
                     SELECT 1 FROM supplier_aliases
                     WHERE supplier_aliases.canonical_supplier_id = canonical_suppliers.id
-                      AND supplier_aliases.alias LIKE ?
+                      AND barni_contains(supplier_aliases.alias, ?) = 1
                 )
-                OR invoices.invoice_number LIKE ?
-                OR invoices.supplier_id LIKE ?
+                OR barni_contains(invoices.invoice_number, ?) = 1
+                OR barni_contains(invoices.supplier_id, ?) = 1
                 OR EXISTS (
                     SELECT 1 FROM invoice_items
                     LEFT JOIN invoice_item_identity_links
@@ -1186,41 +1194,40 @@ def search_invoices(
                       ON canonical_products.id = invoice_item_identity_links.canonical_product_id
                     WHERE invoice_items.invoice_id = invoices.id
                     AND (
-                        invoice_items.description LIKE ?
-                        OR invoice_items.item_code LIKE ?
-                        OR canonical_products.canonical_name LIKE ?
+                        barni_contains(invoice_items.description, ?) = 1
+                        OR barni_contains(invoice_items.item_code, ?) = 1
+                        OR barni_contains(canonical_products.canonical_name, ?) = 1
                         OR EXISTS (
                             SELECT 1 FROM product_aliases
                             WHERE product_aliases.canonical_product_id = canonical_products.id
-                              AND product_aliases.alias LIKE ?
+                              AND barni_contains(product_aliases.alias, ?) = 1
                         )
                     )
                 )
             )
             """
         )
-        token = f"%{free_text}%"
-        params.extend([token] * 9)
+        params.extend([free_text] * 9)
 
     if supplier_query:
         clauses.append(
             """
             (
-                invoices.supplier LIKE ?
-                OR canonical_suppliers.canonical_name LIKE ?
+                barni_contains(invoices.supplier, ?) = 1
+                OR barni_contains(canonical_suppliers.canonical_name, ?) = 1
                 OR EXISTS (
                     SELECT 1 FROM supplier_aliases
                     WHERE supplier_aliases.canonical_supplier_id = canonical_suppliers.id
-                      AND supplier_aliases.alias LIKE ?
+                      AND barni_contains(supplier_aliases.alias, ?) = 1
                 )
             )
             """
         )
-        params.extend([f"%{supplier_query}%"] * 3)
+        params.extend([supplier_query] * 3)
 
     if invoice_number:
-        clauses.append("invoices.invoice_number LIKE ?")
-        params.append(f"%{invoice_number}%")
+        clauses.append("barni_contains(invoices.invoice_number, ?) = 1")
+        params.append(invoice_number)
 
     if document_types:
         placeholders = ",".join("?" for _ in document_types)
@@ -1285,6 +1292,49 @@ def search_invoices(
     """
     with connect() as connection:
         return pd.read_sql_query(sql, connection, params=params)
+
+
+def search_suggestion_rows() -> list[dict[str, Any]]:
+    """Return approved memory labels with their source invoice in one query."""
+    with connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT invoices.id AS invoice_id,
+                   invoices.supplier,
+                   invoices.invoice_number,
+                   invoices.invoice_date,
+                   invoices.document_type,
+                   canonical_suppliers.canonical_name AS canonical_supplier_name,
+                   invoice_items.description,
+                   invoice_items.item_code,
+                   invoice_items.quantity,
+                   invoice_items.unit_price,
+                   invoice_items.line_total,
+                   invoice_items.line_type,
+                   canonical_products.canonical_name AS canonical_product_name
+            FROM invoices
+            LEFT JOIN invoice_identity_links
+              ON invoice_identity_links.invoice_id = invoices.id
+            LEFT JOIN canonical_suppliers
+              ON canonical_suppliers.id = invoice_identity_links.canonical_supplier_id
+            LEFT JOIN invoice_items
+              ON invoice_items.invoice_id = invoices.id
+            LEFT JOIN invoice_item_identity_links
+              ON invoice_item_identity_links.item_id = invoice_items.id
+            LEFT JOIN canonical_products
+              ON canonical_products.id = invoice_item_identity_links.canonical_product_id
+            WHERE invoices.status = 'approved'
+            ORDER BY invoices.invoice_date DESC, invoices.id DESC, invoice_items.id ASC
+            """
+        ).fetchall()
+    results = []
+    for row in rows:
+        value = dict(row)
+        if not is_product_line(value):
+            value["canonical_product_name"] = ""
+            value["item_code"] = ""
+        results.append(value)
+    return results
 
 
 def invoice_items(invoice_id: int) -> pd.DataFrame:
@@ -1493,12 +1543,15 @@ def supplier_summary(supplier: str) -> dict:
             FROM invoice_items
             JOIN invoices ON invoices.id = invoice_items.invoice_id
             WHERE invoices.supplier = ?
-              AND invoice_items.line_type = 'product'
             ORDER BY invoices.invoice_date DESC, invoice_items.id
             """,
             connection,
             params=[supplier],
         )
+    if not items.empty:
+        items = items[
+            items.apply(lambda row: is_product_line(row.to_dict()), axis=1)
+        ].copy()
 
     total = pd.to_numeric(documents.get("total"), errors="coerce").fillna(0)
     vat = pd.to_numeric(documents.get("vat"), errors="coerce").fillna(0)

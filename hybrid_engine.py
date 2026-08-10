@@ -5,6 +5,7 @@ from pathlib import Path
 
 from ai_extractor import extract_with_ai
 from parser_engine import parse_invoice, extract_items
+from services.pilot_support import log_runtime_error
 
 
 DOCUMENT_REQUIREMENTS = {
@@ -287,16 +288,19 @@ def extract_hybrid(
             )
             return document, method
         except Exception as exc:
-            ai_error = str(exc)
+            log_runtime_error("Invoice extraction service", exc)
+            ai_failed = True
     else:
-        ai_error = "AI disabled"
+        ai_failed = True
 
     parsed = parse_invoice(raw_text)
     items = extract_items(raw_text)
     document = _legacy_to_common(parsed, items)
     validation = validate_document(document)
     document["machine_issues"] = validation["machine_issues"]
-    document["model_notes"] = [f"ai_fallback: {ai_error}"]
+    document["model_notes"] = (
+        ["extraction_service_unavailable"] if ai_failed else []
+    )
     document["status"] = "review"
     document["warnings"] = (
         document["machine_issues"] + document["model_notes"]

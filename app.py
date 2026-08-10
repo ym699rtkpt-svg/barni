@@ -21,7 +21,12 @@ from batch_dashboard import render_batch_dashboard
 from ai_dashboard import render_ai_dashboard
 from business_dashboard import render_business_dashboard
 from smart_archive import render_database_archive
-from daily_intake import render_daily_intake
+from daily_intake import (
+    consume_first_feed_transition,
+    render_daily_intake,
+    render_first_feed_onboarding,
+    render_first_feed_transition,
+)
 from database_dashboard import render_database_dashboard
 from migration_dashboard import render_migration_dashboard
 from month_closing import render_month_closing
@@ -32,6 +37,7 @@ from ai_accountant import render_ai_accountant
 from services.pilot_support import APP_VERSION, log_runtime_error
 from services.document_text import extract_document_text
 from ai_extractor import extraction_service_ready
+from services.visible_learning import first_feed_onboarding_required
 
 APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = APP_DIR / "data"
@@ -201,6 +207,18 @@ def render_extraction_preflight() -> None:
 render_extraction_preflight()
 
 render_landing_page()
+
+if first_feed_onboarding_required():
+    render_first_feed_onboarding()
+    st.stop()
+
+if st.session_state.get("barni_first_feed_transition_pending"):
+    st.session_state["barni_home_learning_confirmation"] = (
+        consume_first_feed_transition()
+    )
+    st.session_state["barni_first_session_home_active"] = True
+    st.session_state.current_page = "Barni"
+    st.rerun()
 
 st.markdown(
     """
@@ -495,6 +513,12 @@ def render_page_safely(page_name: str, renderer) -> None:
 
 
 if page == PAGE_HOME:
+    home_learning_confirmation = st.session_state.pop(
+        "barni_home_learning_confirmation",
+        None,
+    )
+    if home_learning_confirmation is not None:
+        render_first_feed_transition(home_learning_confirmation)
     render_page_safely(PAGE_HOME, render_home)
 
 if page == PAGE_RECIPES:

@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from database import connect
+from knowledge_engine.line_classifier import classify_invoice_item, is_product_line
 from services.business_identity import (
     BusinessIdentityRepository,
     normalize_currency,
@@ -397,7 +398,6 @@ class BusinessFactsEngine:
                 JOIN invoices ON invoices.id = items.invoice_id
                 LEFT JOIN invoice_item_identity_links item_links ON item_links.item_id = items.id
                 LEFT JOIN invoice_identity_links invoice_links ON invoice_links.invoice_id = invoices.id
-                WHERE items.line_type = 'product'
                 ORDER BY items.id
                 """
             ).fetchall()
@@ -407,6 +407,14 @@ class BusinessFactsEngine:
             now = self._now()
             for source in rows:
                 source_data = dict(source)
+                if not is_product_line(source_data):
+                    self._invalidate_non_product_fact(
+                        connection,
+                        int(source_data["invoice_item_id"]),
+                        classify_invoice_item(source_data),
+                        now,
+                    )
+                    continue
                 for builder in self.builders:
                     fact = builder.build(source_data)
                     fact_id = self._upsert_fact(connection, fact, now)
@@ -423,6 +431,30 @@ class BusinessFactsEngine:
             connection.commit()
         self._enqueue_conflicts(conflicts)
         return {"facts": built, **statuses}
+
+    @staticmethod
+    def _invalidate_non_product_fact(
+        connection: sqlite3.Connection,
+        item_id: int,
+        semantic_type: str,
+        now: str,
+    ) -> None:
+        """Fail closed if an older item was previously treated as a product."""
+        fingerprint = hashlib.sha256(
+            f"price:invoice_item:{item_id}".encode()
+        ).hexdigest()
+        connection.execute(
+            """UPDATE business_facts
+               SET trust_status = ?, business_confidence = 0,
+                   status_explanation = ?, updated_at = ?
+               WHERE fingerprint = ?""",
+            (
+                FactStatus.NOT_COMPARABLE,
+                f"This invoice line is a {semantic_type} charge, not a product price.",
+                now,
+                fingerprint,
+            ),
+        )
 
     def _upsert_fact(self, connection: sqlite3.Connection, fact: BusinessFact, now: str) -> int:
         connection.execute(

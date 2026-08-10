@@ -25,6 +25,7 @@ from services.invoice_workflow import (
     queue_record_lifecycle,
     database_record_lifecycle,
 )
+from services.product_state import FirstFeedState
 
 
 class TrustedInvoiceLifecycleContractTests(unittest.TestCase):
@@ -100,6 +101,7 @@ class TrustedInvoiceLifecycleContractTests(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(result.outcome, "saved")
         self.assertIsNotNone(result.invoice_id)
+        self.assertTrue(FirstFeedState().is_complete())
 
         record["queue_status"] = "approved"
         self._write_queue([record])
@@ -239,12 +241,14 @@ class TrustedInvoiceLifecycleContractTests(unittest.TestCase):
         self.assertEqual(interrupted.outcome, "error")
         self.assertIn("Your invoice is safe in review", interrupted.message)
         self.assertNotIn("simulated", interrupted.message)
+        self.assertFalse(FirstFeedState().is_complete())
         self.assertEqual(len(search_invoices(statuses=["approved"])), 1)
 
         resumed = InvoiceWorkflowService().approve(record, document)
 
         self.assertTrue(resumed.success)
         self.assertTrue(resumed.replayed)
+        self.assertTrue(FirstFeedState().is_complete())
         self.assertEqual(resumed.invoice_id, interrupted.invoice_id)
         self.assertEqual(len(search_invoices(statuses=["approved"])), 1)
         supplier_memory = KnowledgeRepository().get_supplier_memory("vat-1")

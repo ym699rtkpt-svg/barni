@@ -21,6 +21,7 @@ from database import (
 from knowledge_engine.engine import KnowledgeEngine
 from knowledge_engine.events import KnowledgeEvent
 from services.business_facts import ComparablePriceLedger
+from services.product_state import FirstFeedState
 
 
 class ProcessingState(str, Enum):
@@ -471,10 +472,12 @@ class InvoiceWorkflowService:
         connection_factory: Callable = connect,
         knowledge_engine: KnowledgeEngine | None = None,
         price_ledger: ComparablePriceLedger | None = None,
+        first_feed_state: FirstFeedState | None = None,
     ) -> None:
         self._connect = connection_factory
         self._knowledge = knowledge_engine or KnowledgeEngine()
         self._ledger = price_ledger or ComparablePriceLedger(connection_factory)
+        self._first_feed_state = first_feed_state or FirstFeedState()
 
     def approve(
         self,
@@ -572,6 +575,7 @@ class InvoiceWorkflowService:
 
             notify("learning")
             self._learn_once(invoice_id, document)
+            self._first_feed_state.complete(invoice_id=invoice_id)
             self._complete_operation(operation_key, outcome=outcome or "saved", invoice_id=invoice_id)
             return ApprovalResult(
                 True,

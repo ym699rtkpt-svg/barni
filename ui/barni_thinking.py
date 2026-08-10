@@ -35,12 +35,17 @@ def _render_styles() -> None:
     st.markdown(
         """
         <style>
-        [class*="st-key-barni_narrative_shell_"] {
+        [class*="st-key-barni_narrative_shell_"],
+        [class*="st-key-barni_narrative_compact_"] {
             background: #f3f5ed;
             border: 1px solid rgba(49, 91, 61, 0.16);
             border-radius: 18px;
             padding: 1.05rem 1.2rem 1rem;
             margin: .45rem 0 1rem;
+        }
+        [class*="st-key-barni_narrative_compact_"] {
+            padding: .8rem 1rem .75rem;
+            margin: .25rem 0 .65rem;
         }
         [class*="st-key-barni_narrative_conclusion_"] {
             background: #fcfbf7;
@@ -65,10 +70,12 @@ def _render_styles() -> None:
             padding: .65rem .8rem .5rem;
             margin-bottom: .55rem;
         }
-        [class*="st-key-barni_narrative_shell_"] p {
+        [class*="st-key-barni_narrative_shell_"] p,
+        [class*="st-key-barni_narrative_compact_"] p {
             margin-bottom: .25rem;
         }
-        [class*="st-key-barni_narrative_shell_"] h3 {
+        [class*="st-key-barni_narrative_shell_"] h3,
+        [class*="st-key-barni_narrative_compact_"] h3 {
             color: #2f4f37;
             line-height: 1.35;
         }
@@ -83,6 +90,7 @@ def render_barni_thinking(
     *,
     key_prefix: str,
     on_open_evidence: Callable[[int], None] | None = None,
+    compact: bool = False,
 ) -> None:
     _render_styles()
     conclusion, conclusion_tone = _narrative_conclusion(thinking)
@@ -91,7 +99,8 @@ def render_barni_thinking(
     memory = _section(thinking, "Memory")
     confidence = _section(thinking, "Confidence")
 
-    with st.container(key=f"barni_narrative_shell_{key_prefix}"):
+    density = "compact" if compact else "shell"
+    with st.container(key=f"barni_narrative_{density}_{key_prefix}"):
         st.caption("BARNI'S VIEW")
         with st.container(
             key=f"barni_narrative_conclusion_{conclusion_tone}_{key_prefix}"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from database import connect, dashboard_data, product_price_history, search_invoices
+from knowledge_engine.line_classifier import is_product_line
 from services.business_identity import BusinessIdentityRepository
 from services.invoice_workflow import approved_documents
 
@@ -26,8 +27,10 @@ def business_memory_data() -> dict:
         approved_ids = set(invoices.get("id", pd.Series(dtype=int)).tolist())
         items = items[items["invoice_id"].isin(approved_ids)].copy()
 
-    if not items.empty and "line_type" in items.columns:
-        product_items = items[items["line_type"] == "product"].copy()
+    if not items.empty:
+        product_items = items[
+            items.apply(lambda row: is_product_line(row.to_dict()), axis=1)
+        ].copy()
     else:
         product_items = pd.DataFrame(columns=items.columns)
 
@@ -166,7 +169,12 @@ def product_memory_options() -> list[str]:
                GROUP BY products.id
                ORDER BY COUNT(*) DESC, products.canonical_name COLLATE NOCASE"""
         ).fetchall()
-    trusted_history = [row["canonical_name"] for row in rows]
+    known_names = set(all_names)
+    trusted_history = [
+        row["canonical_name"]
+        for row in rows
+        if row["canonical_name"] in known_names
+    ]
     return [*trusted_history, *(name for name in all_names if name not in set(trusted_history))]
 
 

@@ -63,6 +63,26 @@ def _display_date(value) -> str:
     return parsed.strftime("%d %b %Y") if pd.notna(parsed) else "Date unavailable"
 
 
+def _has_meaningful_growth(growth: pd.DataFrame) -> bool:
+    if growth.empty or "date" not in growth.columns:
+        return False
+    dates = pd.to_datetime(growth["date"], errors="coerce").dropna()
+    return dates.dt.normalize().nunique() >= 2
+
+
+def _meaningful_categories(categories: pd.DataFrame) -> pd.DataFrame:
+    """Suppress category presentation when unknown records are the majority."""
+    if categories.empty or not {"category", "count"}.issubset(categories.columns):
+        return categories.iloc[0:0].copy()
+    values = categories.copy()
+    normalized = values["category"].fillna("").astype(str).str.strip().str.casefold()
+    unknown = normalized.isin({"", "לא מסווג", "uncategorized", "not classified"})
+    unknown_count = int(pd.to_numeric(values.loc[unknown, "count"], errors="coerce").fillna(0).sum())
+    meaningful = values[~unknown].copy()
+    meaningful_count = int(pd.to_numeric(meaningful["count"], errors="coerce").fillna(0).sum())
+    return meaningful if meaningful_count > unknown_count else meaningful.iloc[0:0]
+
+
 def _open_invoice(invoice_id: int) -> None:
     st.session_state.search_selected_kind = "invoice"
     st.session_state.search_selected_value = int(invoice_id)
@@ -220,10 +240,12 @@ def render_business_memory() -> None:
     st.markdown("### Business categories")
     st.caption("How stored invoices are currently organized")
     categories = memory["categories"]
-    if categories.empty:
-        st.caption("No business categories learned yet.")
+    visible_categories = _meaningful_categories(categories).head(6)
+    if visible_categories.empty:
+        st.caption(
+            "Barni does not yet have enough reliable category information."
+        )
     else:
-        visible_categories = categories.head(6)
         category_columns = st.columns(len(visible_categories), gap="small")
         for index, (column, (_, category)) in enumerate(
             zip(category_columns, visible_categories.iterrows())
@@ -237,8 +259,11 @@ def render_business_memory() -> None:
     st.markdown("### Knowledge growth over time")
     st.caption("Cumulative knowledge from stored invoices")
     growth = memory["growth"]
-    if growth.empty:
-        st.caption("Knowledge growth will appear after Barni learns an invoice.")
+    if not _has_meaningful_growth(growth):
+        st.caption(
+            "Barni is still learning. Growth over time will appear after knowledge "
+            "changes on more than one day."
+        )
     else:
         with st.container(key="memory_growth"):
             st.line_chart(

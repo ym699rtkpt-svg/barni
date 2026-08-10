@@ -72,7 +72,10 @@ def _identity_section(invoice: Mapping[str, Any]) -> ThinkingSection:
     supplier = _text(invoice.get("canonical_supplier_name") or invoice.get("supplier"))
     document_type = _text(invoice.get("document_type"))
     if supplier and document_type:
-        statement = f"I believe this is a {document_type} from {supplier}."
+        statement = (
+            f"I recognize the document type as {document_type}, and it belongs to "
+            f"{supplier}."
+        )
         tone = "positive"
     elif supplier:
         statement = (
@@ -82,7 +85,7 @@ def _identity_section(invoice: Mapping[str, Any]) -> ThinkingSection:
         tone = "attention"
     elif document_type:
         statement = (
-            f"This looks like a {document_type}, but I couldn't confidently identify "
+            f"I recognize this as {document_type}, but I couldn't confidently identify "
             "the supplier."
         )
         tone = "attention"
@@ -109,10 +112,13 @@ def _memory_section(
     elif previous:
         count = len(previous)
         noun = "invoice" if count == 1 else "invoices"
-        statement = f"I found {count} previous {noun} from {supplier}."
+        statement = f"I found {count} earlier {noun} from {supplier}."
         tone = "neutral"
+    elif _text(invoice.get("status")).lower() == "approved":
+        statement = f"This is the first approved invoice I know from {supplier}."
+        tone = "positive"
     else:
-        statement = f"I haven't seen a previous invoice from {supplier} yet."
+        statement = f"I haven't seen an earlier invoice from {supplier} yet."
         tone = "positive"
     return ThinkingSection("Memory", "What do I already know?", (statement,), tone)
 
@@ -239,12 +245,15 @@ def _recommendation_section(
     )
     if already_approved and (missing or insight_needs_attention or _has_recorded_uncertainty(invoice)):
         statement = (
-            "This invoice is already in Business Memory. Review the detail I flagged "
+            "I've remembered this approved invoice. Review the detail I flagged "
             "and update it if necessary."
         )
         tone = "attention"
     elif already_approved:
-        statement = "This invoice is already in Business Memory. Review the evidence below if you need more detail."
+        statement = (
+            "I've remembered this approved invoice. Review the evidence below if "
+            "you need more detail."
+        )
         tone = "positive"
     elif Category.DUPLICATE in categories:
         statement = recommended or "Compare this with the invoice I already remember before deciding whether to keep it."

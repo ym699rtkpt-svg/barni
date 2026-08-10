@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from database import connect
+from knowledge_engine.line_classifier import is_product_line
 
 
 def normalize_identity_text(value: Any) -> str:
@@ -148,7 +149,7 @@ class BusinessIdentityRepository:
                 """
             ).fetchall()
             for item in items:
-                if str(item["line_type"] or "product") != "product":
+                if not is_product_line(dict(item)):
                     continue
                 if not normalize_identity_text(item["description"]):
                     continue
@@ -157,7 +158,9 @@ class BusinessIdentityRepository:
 
             observations = connection.execute(
                 """
-                SELECT invoice_items.id, invoice_items.description, invoice_items.unit,
+                SELECT invoice_items.id, invoice_items.description, invoice_items.quantity,
+                       invoice_items.unit, invoice_items.unit_price,
+                       invoice_items.line_total, invoice_items.line_type,
                        links.canonical_product_id, links.normalized_unit,
                        links.package_quantity, links.package_unit,
                        products.base_unit canonical_base_unit,
@@ -166,10 +169,11 @@ class BusinessIdentityRepository:
                 FROM invoice_items
                 JOIN invoice_item_identity_links links ON links.item_id = invoice_items.id
                 JOIN canonical_products products ON products.id = links.canonical_product_id
-                WHERE invoice_items.line_type = 'product'
                 """
             ).fetchall()
             for row in observations:
+                if not is_product_line(dict(row)):
+                    continue
                 normalized_unit = normalize_unit(row["unit"])
                 packaging = normalize_packaging(row["description"], row["unit"])
                 if (
@@ -226,14 +230,17 @@ class BusinessIdentityRepository:
             product_aliases = connection.execute(
                 """
                 SELECT invoice_items.id, invoice_items.description,
+                       invoice_items.quantity, invoice_items.unit_price,
+                       invoice_items.line_total, invoice_items.line_type,
                        invoice_item_identity_links.canonical_product_id
                 FROM invoice_items
                 JOIN invoice_item_identity_links
                   ON invoice_item_identity_links.item_id = invoice_items.id
-                WHERE invoice_items.line_type = 'product'
                 """
             ).fetchall()
             for row in product_aliases:
+                if not is_product_line(dict(row)):
+                    continue
                 alias = str(row["description"] or "").strip()
                 normalized = normalize_identity_text(alias)
                 if normalized:
@@ -263,7 +270,7 @@ class BusinessIdentityRepository:
             ).fetchall()
             for item in items:
                 if (
-                    str(item["line_type"] or "product") == "product"
+                    is_product_line(dict(item))
                     and normalize_identity_text(item["description"])
                 ):
                     self._link_product(connection, dict(item))
@@ -440,6 +447,7 @@ class BusinessIdentityRepository:
     def products(self) -> list[CanonicalProduct]:
         self.sync_existing_memory()
         with self._connect() as connection:
+            product_ids = self._qualifying_product_ids(connection)
             rows = connection.execute(
                 "SELECT * FROM canonical_products WHERE active = 1 ORDER BY canonical_name COLLATE NOCASE"
             ).fetchall()
@@ -459,7 +467,30 @@ class BusinessIdentityRepository:
                 aliases=tuple(grouped.get(int(row["id"]), [])),
             )
             for row in rows
+            if int(row["id"]) in product_ids
         ]
+
+    @staticmethod
+    def _qualifying_product_rows(connection: sqlite3.Connection) -> list[sqlite3.Row]:
+        rows = connection.execute(
+            """SELECT links.canonical_product_id, links.normalized_unit,
+                      links.package_quantity, items.id, items.description,
+                      items.quantity, items.unit, items.unit_price,
+                      items.line_total, items.line_type
+               FROM invoice_item_identity_links links
+               JOIN invoice_items items ON items.id = links.item_id
+               JOIN canonical_products products
+                 ON products.id = links.canonical_product_id
+               WHERE products.active = 1"""
+        ).fetchall()
+        return [row for row in rows if is_product_line(dict(row))]
+
+    @classmethod
+    def _qualifying_product_ids(cls, connection: sqlite3.Connection) -> set[int]:
+        return {
+            int(row["canonical_product_id"])
+            for row in cls._qualifying_product_rows(connection)
+        }
 
     def supplier_identity(
         self,
@@ -598,6 +629,19 @@ class BusinessIdentityRepository:
     def identity_health(self) -> dict[str, int]:
         self.sync_existing_memory()
         with self._connect() as connection:
+            product_rows = self._qualifying_product_rows(connection)
+            product_ids = {
+                int(row["canonical_product_id"])
+                for row in product_rows
+            }
+            aliases = connection.execute(
+                "SELECT canonical_product_id FROM product_aliases"
+            ).fetchall()
+            price_counts: dict[int, int] = {}
+            for row in product_rows:
+                if row["unit_price"] is not None:
+                    product_id = int(row["canonical_product_id"])
+                    price_counts[product_id] = price_counts.get(product_id, 0) + 1
             values = {
                 "suppliers": connection.execute(
                     "SELECT COUNT(*) FROM canonical_suppliers WHERE active = 1"
@@ -605,38 +649,23 @@ class BusinessIdentityRepository:
                 "supplier_aliases": connection.execute(
                     "SELECT COUNT(*) FROM supplier_aliases"
                 ).fetchone()[0],
-                "products": connection.execute(
-                    "SELECT COUNT(*) FROM canonical_products WHERE active = 1"
-                ).fetchone()[0],
-                "product_aliases": connection.execute(
-                    "SELECT COUNT(*) FROM product_aliases"
-                ).fetchone()[0],
-                "normalized_units": connection.execute(
-                    "SELECT COUNT(*) FROM invoice_item_identity_links WHERE normalized_unit <> ''"
-                ).fetchone()[0],
-                "packaging_observations": connection.execute(
-                    "SELECT COUNT(*) FROM invoice_item_identity_links WHERE package_quantity IS NOT NULL"
-                ).fetchone()[0],
-                "price_points": connection.execute(
-                    """
-                    SELECT COUNT(*) FROM invoice_item_identity_links
-                    JOIN invoice_items ON invoice_items.id = invoice_item_identity_links.item_id
-                    WHERE invoice_items.unit_price IS NOT NULL
-                    """
-                ).fetchone()[0],
-                "covered_products": connection.execute(
-                    """
-                    SELECT COUNT(*) FROM (
-                        SELECT invoice_item_identity_links.canonical_product_id
-                        FROM invoice_item_identity_links
-                        JOIN invoice_items
-                          ON invoice_items.id = invoice_item_identity_links.item_id
-                        WHERE invoice_items.unit_price IS NOT NULL
-                        GROUP BY invoice_item_identity_links.canonical_product_id
-                        HAVING COUNT(*) >= 2
-                    )
-                    """
-                ).fetchone()[0],
+                "products": len(product_ids),
+                "product_aliases": sum(
+                    int(row["canonical_product_id"]) in product_ids
+                    for row in aliases
+                ),
+                "normalized_units": sum(
+                    bool(str(row["normalized_unit"] or ""))
+                    for row in product_rows
+                ),
+                "packaging_observations": sum(
+                    row["package_quantity"] is not None
+                    for row in product_rows
+                ),
+                "price_points": sum(price_counts.values()),
+                "covered_products": sum(
+                    count >= 2 for count in price_counts.values()
+                ),
             }
         return {key: int(value) for key, value in values.items()}
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -14,7 +13,7 @@ import streamlit as st
 
 from database import duplicate_invoice, root_dir
 from hybrid_engine import extract_hybrid, normalize_document, validate_document
-from knowledge_engine.line_classifier import classify_invoice_line
+from knowledge_engine.line_classifier import is_product_line
 from review_form import approve_to_database_detailed, document_review_form
 from services.barni_thinking import think_about_invoice
 from services.business_memory import business_memory_data
@@ -25,9 +24,29 @@ from services.pilot_support import log_pilot_event, log_runtime_error
 from services.document_text import extract_document_text
 from services.invoice_reuse import approved_document_for_identical_source
 from services.feed_journal import FeedJournalCursor
+from services.customer_safe_errors import (
+    customer_review_reasons,
+    source_recovery_message,
+)
+from services.product_state import FirstFeedState
+from services.visible_learning import (
+    capture_learning_snapshot,
+    learning_change,
+    visible_learning_rows,
+)
 from ui.barni_thinking import render_barni_thinking
 from ui.business_story import render_business_story
+from ui.design_system import primary_workspace, render_page_header
 from ui.workflow_status import render_workflow_status
+from ui.original_source import render_original_source
+
+
+EXTRACTION_WAIT_MESSAGES = (
+    "Reading invoice",
+    "Understanding supplier and invoice details",
+    "Understanding items and charges",
+    "Preparing review",
+)
 
 
 def _render_feed_styles() -> None:
@@ -38,6 +57,123 @@ def _render_feed_styles() -> None:
             text-align: center;
             padding: 0.8rem 1rem 1.2rem;
         }
+        .st-key-first_feed_onboarding {
+            width: min(100%, 760px);
+            margin: 0.4rem auto 0;
+        }
+        .barni-first-feed-cue {
+            width: min(100%, 260px);
+            margin: 0.75rem auto 0.15rem;
+            color: #59675e;
+            text-align: center;
+        }
+        .barni-first-feed-cue-stage {
+            position: relative;
+            width: 84px;
+            height: 64px;
+            margin: 0 auto 0.25rem;
+        }
+        .barni-first-feed-cue-path {
+            position: absolute;
+            top: 1px;
+            bottom: 7px;
+            left: 50%;
+            border-left: 1px dashed rgba(49, 91, 61, 0.30);
+        }
+        .barni-first-feed-cue-path::before {
+            content: "";
+            position: absolute;
+            top: -1px;
+            left: -4px;
+            width: 7px;
+            height: 7px;
+            border-top: 1.5px solid #78917d;
+            border-left: 1.5px solid #78917d;
+            transform: rotate(45deg);
+        }
+        .barni-first-feed-cue-document {
+            position: absolute;
+            bottom: 1px;
+            left: 50%;
+            width: 31px;
+            height: 39px;
+            padding: 9px 6px 5px;
+            transform: translate(-50%, 6px);
+            background: #fcfbf7;
+            border: 1px solid rgba(49, 91, 61, 0.34);
+            border-radius: 5px;
+            box-shadow: 0 4px 10px rgba(36, 54, 43, 0.08);
+            animation: first-feed-document 2.6s ease-in-out infinite;
+        }
+        .barni-first-feed-cue-document::before {
+            content: "";
+            position: absolute;
+            top: -1px;
+            right: -1px;
+            width: 8px;
+            height: 8px;
+            background: #eef3e8;
+            border-left: 1px solid rgba(49, 91, 61, 0.24);
+            border-bottom: 1px solid rgba(49, 91, 61, 0.24);
+            border-radius: 0 4px 0 2px;
+        }
+        .barni-first-feed-cue-document span {
+            display: block;
+            height: 2px;
+            margin-bottom: 4px;
+            border-radius: 999px;
+            background: rgba(49, 91, 61, 0.28);
+        }
+        .barni-first-feed-cue-document span:last-child {
+            width: 65%;
+        }
+        .barni-first-feed-cue-relationship {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.45rem;
+            font-size: 0.76rem;
+            font-weight: 600;
+            letter-spacing: 0.01em;
+        }
+        .barni-first-feed-cue-arrow {
+            color: #78917d;
+            font-size: 0.9rem;
+        }
+        .st-key-first_feed_onboarding:has(.barni-first-feed-cue) .barni-feed-egg--calm {
+            animation: first-feed-egg-response 2.6s ease-in-out infinite;
+        }
+        @keyframes first-feed-document {
+            0%, 12% {
+                opacity: 0.86;
+                transform: translate(-50%, 6px) scale(1);
+            }
+            54% {
+                opacity: 1;
+                transform: translate(-50%, -17px) scale(0.98);
+            }
+            68% {
+                opacity: 0;
+                transform: translate(-50%, -27px) scale(0.90);
+            }
+            69%, 100% {
+                opacity: 0;
+                transform: translate(-50%, 6px) scale(1);
+            }
+        }
+        @keyframes first-feed-egg-response {
+            0%, 54%, 82%, 100% {
+                transform: translateY(0) rotate(0deg) scale(1);
+                filter: drop-shadow(0 5px 7px rgba(45, 70, 53, 0.10));
+            }
+            63% {
+                transform: translateY(-3px) rotate(-1.2deg) scale(1.012, 0.992);
+                filter: drop-shadow(0 8px 11px rgba(63, 91, 68, 0.18));
+            }
+            72% {
+                transform: translateY(0) rotate(0.8deg) scale(0.996, 1.008);
+            }
+        }
         .barni-feed-egg {
             display: inline-block;
             font-size: 4.6rem;
@@ -46,73 +182,44 @@ def _render_feed_styles() -> None:
             transform-origin: 50% 86%;
             filter: drop-shadow(0 5px 7px rgba(45, 70, 53, 0.10));
         }
-        .barni-hatch-moment {
-            min-height: 16rem;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            text-align: center;
-        }
-        .barni-hatch-scene {
-            width: 13rem;
-            filter: drop-shadow(0 9px 11px rgba(45, 70, 53, 0.12));
-            transform-origin: 50% 82%;
-            animation: barni-hatch-wobble 2.3s ease-in-out both;
-        }
-        .barni-hatch-crack {
-            opacity: 0;
-            stroke-dasharray: 42;
-            stroke-dashoffset: 42;
-            animation: barni-crack-open 2.3s ease-out both;
-        }
-        .barni-hatch-top {
-            transform-origin: 91px 84px;
-            animation: barni-shell-open 2.3s ease-in-out both;
-        }
-        .barni-hatch-bottom {
-            transform-origin: 91px 126px;
-            animation: barni-shell-bottom-open 2.3s ease-in-out both;
-        }
-        .barni-hatchling {
-            opacity: 0;
-            transform: translateY(25px);
-            transform-origin: center;
-            animation: barni-hatchling-rise 2.3s ease-out both;
-        }
-        @keyframes barni-hatch-wobble {
-            0%, 14%, 32%, 100% { transform: rotate(0deg) scale(1, 1); }
-            18% { transform: rotate(-4deg) scale(1.025, 0.975); }
-            22% { transform: rotate(4.2deg) scale(0.98, 1.025); }
-            26% { transform: rotate(-2.5deg) scale(1.015, 0.988); }
-            30% { transform: rotate(1.5deg) scale(0.995, 1.01); }
-        }
-        @keyframes barni-crack-open {
-            0%, 27% { opacity: 0; stroke-dashoffset: 42; }
-            35%, 44% { opacity: 0.85; stroke-dashoffset: 19; }
-            51%, 100% { opacity: 1; stroke-dashoffset: 0; }
-        }
-        @keyframes barni-shell-open {
-            0%, 50% { transform: translate(0, 0) rotate(0deg); }
-            65%, 100% { transform: translate(-14px, -18px) rotate(-16deg); }
-        }
-        @keyframes barni-shell-bottom-open {
-            0%, 50% { transform: translate(0, 0) rotate(0deg); }
-            65%, 100% { transform: translate(5px, 5px) rotate(2.5deg); }
-        }
-        @keyframes barni-hatchling-rise {
-            0%, 58% { opacity: 0; transform: translateY(25px); }
-            70% { opacity: 1; transform: translateY(-3px); }
-            100% { opacity: 1; transform: translateY(0); }
-        }
         .barni-feed-egg--awake {
             animation: feed-egg-awake 3s ease-in-out infinite;
         }
         .barni-feed-egg--learning {
             animation: feed-egg-learning 1.6s ease-in-out infinite;
         }
+        .barni-feed-egg--learned {
+            animation: feed-egg-learned 0.9s ease-out both;
+        }
         .barni-feed-egg--small {
             font-size: 2.3rem;
             margin: 0.25rem 0 0.45rem;
+        }
+        .barni-extraction-activity {
+            position: relative;
+            min-height: 1.65rem;
+            margin: 0.25rem 0 0.5rem;
+            color: #3f5b44;
+            font-size: 0.92rem;
+            font-weight: 600;
+        }
+        .barni-extraction-activity span {
+            position: absolute;
+            inset: 0 auto auto 0;
+            opacity: 0;
+            animation: barni-extraction-message 10.4s ease-in-out infinite;
+            animation-delay: calc(var(--barni-message-index) * 2.6s);
+        }
+        .barni-extraction-activity span::after {
+            content: "";
+            display: inline-block;
+            width: 1.15rem;
+            height: 0.75rem;
+            margin-left: 0.3rem;
+            vertical-align: baseline;
+            background: radial-gradient(circle, currentColor 1.4px, transparent 1.6px)
+                0 100% / 0.36rem 0.36rem repeat-x;
+            opacity: 0.58;
         }
         @keyframes feed-egg-awake {
             0%, 68%, 84%, 100% { transform: rotate(0deg) scale(1, 1); }
@@ -136,6 +243,21 @@ def _render_feed_styles() -> None:
             }
             86% { transform: rotate(-1.2deg) scale(1.008, 0.996); }
         }
+        @keyframes feed-egg-learned {
+            0%, 100% {
+                transform: translateY(0) scale(1);
+                filter: drop-shadow(0 5px 7px rgba(45, 70, 53, 0.10));
+            }
+            38% {
+                transform: translateY(-7px) scale(1.025, 0.975);
+                filter: drop-shadow(0 10px 12px rgba(63, 91, 68, 0.20));
+            }
+            66% { transform: translateY(1px) scale(0.99, 1.012); }
+        }
+        @keyframes barni-extraction-message {
+            0%, 20% { opacity: 1; transform: translateY(0); }
+            25%, 100% { opacity: 0; transform: translateY(-2px); }
+        }
         .st-key-feed_upload {
             background: #f8f4ea;
             border: 1px solid rgba(45, 70, 53, 0.12);
@@ -149,6 +271,17 @@ def _render_feed_styles() -> None:
             background: #fcfbf7;
             border: 1px dashed rgba(45, 70, 53, 0.28);
             border-radius: 16px;
+        }
+        .st-key-barni_primary_workspace_feed .st-key-feed_upload {
+            margin-top: .85rem;
+            padding: .85rem 0 0;
+            background: transparent;
+            border: 0;
+            border-top: 1px solid rgba(45, 70, 53, 0.10);
+            border-radius: 0;
+        }
+        .st-key-barni_primary_workspace_feed [data-testid="stHorizontalBlock"] {
+            align-items: center;
         }
         .st-key-feed_summary {
             background: #f2f5ed;
@@ -208,13 +341,13 @@ def _render_feed_styles() -> None:
             background: #f2f5ed;
             border: 1px solid rgba(63, 91, 68, 0.14);
             border-radius: 20px;
-            padding: 1.15rem 1.35rem;
+            padding: 0.9rem 1.15rem;
         }
         .st-key-feed_review_panel {
             background: #fcfbf7;
             border: 1px solid rgba(45, 70, 53, 0.10);
             border-radius: 20px;
-            padding: 1.1rem 1.25rem;
+            padding: 0.85rem 1rem;
         }
         .barni-feed-status {
             display: inline-flex;
@@ -232,27 +365,31 @@ def _render_feed_styles() -> None:
         }
         @media (prefers-reduced-motion: reduce) {
             .barni-feed-egg--awake,
-            .barni-feed-egg--learning {
+            .barni-feed-egg--learning,
+            .barni-feed-egg--learned {
                 animation: none;
                 transform: none;
             }
-            .barni-hatch-scene { animation: none; }
-            .barni-hatch-crack {
+            .barni-first-feed-cue-document {
                 animation: none;
                 opacity: 1;
-                stroke-dashoffset: 0;
+                transform: translate(-50%, -12px);
             }
-            .barni-hatch-top {
-                animation: none;
-                transform: translate(-14px, -18px) rotate(-16deg);
+            .barni-extraction-activity {
+                min-height: auto;
             }
-            .barni-hatch-bottom {
-                animation: none;
-                transform: translate(5px, 5px) rotate(2.5deg);
-            }
-            .barni-hatchling {
+            .barni-extraction-activity span {
+                display: none;
+                position: static;
                 animation: none;
                 opacity: 1;
+                transform: none;
+            }
+            .barni-extraction-activity span:first-child {
+                display: inline;
+            }
+            .st-key-first_feed_onboarding:has(.barni-first-feed-cue) .barni-feed-egg--calm {
+                animation: none;
                 transform: none;
             }
         }
@@ -273,38 +410,41 @@ def _render_feed_egg(state: str = "calm", *, small: bool = False) -> None:
     )
 
 
-def _render_hatch_moment() -> None:
-    """Render Barni's temporary, asset-free hatchling transition."""
+def _render_first_feed_visual_cue() -> None:
+    """Show the invoice-to-memory metaphor without changing workflow state."""
     st.markdown(
         """
-        <div class="barni-hatch-moment" data-barni-growth-state="hatchling">
-          <svg class="barni-hatch-scene" viewBox="0 0 182 176"
-               role="img" aria-label="Barni hatching">
-            <ellipse cx="91" cy="158" rx="47" ry="7" fill="#dfe5dc" opacity="0.55"/>
-            <g class="barni-hatchling">
-              <path d="M59 112c0-28 14-47 32-47s32 19 32 47v28H59z"
-                    fill="#315b3d"/>
-              <ellipse cx="79" cy="99" rx="4" ry="5" fill="#fcfbf7"/>
-              <ellipse cx="103" cy="99" rx="4" ry="5" fill="#fcfbf7"/>
-              <circle cx="80" cy="100" r="1.5" fill="#24362b"/>
-              <circle cx="102" cy="100" r="1.5" fill="#24362b"/>
-              <path d="M83 112c5 4 11 4 16 0" fill="none" stroke="#fcfbf7"
-                    stroke-width="2.3" stroke-linecap="round"/>
-            </g>
-            <path class="barni-hatch-bottom" d="M44 103l13-7 10 9 12-9 12 10 12-10 11 9 13-7
-                     c-1 34-15 57-36 57-23 0-40-21-47-52z"
-                  fill="#f7f3e9" stroke="#78917d" stroke-width="2"/>
-            <g class="barni-hatch-top">
-              <path d="M44 103l13-7 10 9 12-9 12 10 12-10 11 9 13-7
-                       C122 50 108 28 90 28c-22 0-39 29-46 75z"
-                    fill="#fcfbf7" stroke="#78917d" stroke-width="2"/>
-              <path class="barni-hatch-crack" d="M91 52l-9 17 11 8-10 20"
-                    fill="none" stroke="#315b3d" stroke-width="3.3"
-                    stroke-linecap="round" stroke-linejoin="round"/>
-            </g>
-          </svg>
+        <div class="barni-first-feed-cue"
+             data-testid="barni-first-feed-visual-cue"
+             role="img"
+             aria-label="An invoice moves toward Barni so Barni can learn">
+          <div class="barni-first-feed-cue-stage" aria-hidden="true">
+            <div class="barni-first-feed-cue-path"></div>
+            <div class="barni-first-feed-cue-document">
+              <span></span><span></span><span></span>
+            </div>
+          </div>
+          <div class="barni-first-feed-cue-relationship">
+            <span>Invoice</span>
+            <span class="barni-first-feed-cue-arrow" aria-hidden="true">→</span>
+            <span>Barni learns</span>
+          </div>
         </div>
         """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_extraction_activity() -> None:
+    """Keep the blocking extraction wait visibly active without claiming progress."""
+    messages = "".join(
+        f'<span style="--barni-message-index:{index}">{message}</span>'
+        for index, message in enumerate(EXTRACTION_WAIT_MESSAGES)
+    )
+    st.markdown(
+        '<div class="barni-extraction-activity" '
+        'aria-label="Barni is reading and preparing the invoice for review">'
+        f"{messages}</div>",
         unsafe_allow_html=True,
     )
 
@@ -325,10 +465,7 @@ def _processing_summary(records: list[dict]) -> dict[str, int]:
     product_items = [
         item
         for item in items
-        if (
-            item.get("line_type")
-            or classify_invoice_line(str(item.get("description") or ""))
-        ) == "product"
+        if is_product_line(item)
     ]
     return {
         "processed": sum(
@@ -377,14 +514,12 @@ def _render_processing_summary(summary: dict[str, int]) -> None:
 
 
 def _memory_delta(before: dict, after: dict) -> dict[str, int]:
+    change = learning_change(before, after)
     return {
-        "invoices": max(0, after["invoice_count"] - before["invoice_count"]),
-        "suppliers": max(0, after["supplier_count"] - before["supplier_count"]),
-        "products": max(0, after["product_count"] - before["product_count"]),
-        "price_points": max(
-            0,
-            after["price_point_count"] - before["price_point_count"],
-        ),
+        "invoices": change.invoices,
+        "suppliers": change.suppliers,
+        "products": change.products,
+        "price_points": change.comparable_prices,
     }
 
 
@@ -507,35 +642,33 @@ def _status_for(document: dict) -> str:
     return "ready"
 
 
+def _saveable_review_document(document: dict) -> dict:
+    """Revalidate owner corrections while retaining safe extraction limitations."""
+    updated = normalize_document(document)
+    validation = validate_document(updated)
+    updated["machine_issues"] = validation["machine_issues"]
+    updated["model_notes"] = validation["model_notes"]
+    updated["warnings"] = (
+        validation["machine_issues"] + validation["model_notes"]
+    )
+    return updated
+
+
 def _document_recovery_message(path: Path) -> str:
-    if path.suffix.lower() == ".pdf":
-        return "I couldn't read this PDF. Try a clearer copy, or add the invoice details during review."
-    return "I couldn't read this image. Try a sharper photo, or add the invoice details during review."
+    return source_recovery_message(path)
 
 
 def _review_reason(record: dict) -> str:
-    """Return the stored evidence that explains why a document needs attention."""
+    """Return only customer-safe reasons for attention."""
     document = record.get("document") or {}
-    reasons = []
-
-    for field in ("machine_issues", "model_notes"):
-        value = document.get(field) or []
-        if isinstance(value, str):
-            value = [value]
-        reasons.extend(str(item).strip() for item in value if str(item).strip())
-
-    if record.get("queue_status") == "error":
-        reasons.append(_document_recovery_message(
-            Path(record.get("stored_file") or "invoice")
-        ))
-
-    if not reasons and record.get("queue_status") == "review":
-        confidence = float(document.get("confidence") or 0.0)
-        if confidence < 0.90:
-            reasons.append("Low extraction confidence")
+    reasons = customer_review_reasons(
+        document,
+        queue_status=str(record.get("queue_status") or "review"),
+        source_path=Path(record.get("stored_file") or "invoice"),
+    )
 
     if reasons:
-        return " · ".join(dict.fromkeys(reasons))
+        return " · ".join(reasons)
     if record.get("queue_status") == "ready":
         return "Ready for approval"
     return "Review the extracted invoice details"
@@ -557,7 +690,7 @@ def _approval_blockers(document: dict) -> list[str]:
     if document.get("document_type") in {
         "חשבונית מס", "חשבונית מס/קבלה", "חשבונית זיכוי", "תעודת משלוח",
     } and not document.get("items"):
-        missing.append("at least one product")
+        missing.append("at least one invoice line")
     return missing
 
 
@@ -612,7 +745,7 @@ def _render_confidence_summary(document: dict) -> None:
     confidence_fields = (
         ("OCR Confidence", "confidence"),
         ("Supplier Confidence", "supplier_confidence"),
-        ("Products Confidence", "products_confidence"),
+        ("Invoice Lines Confidence", "products_confidence"),
     )
     columns = st.columns(3, gap="medium")
     for index, (label, field) in enumerate(confidence_fields):
@@ -698,9 +831,21 @@ def process_files(
             record["detail_file"] = str(detail)
 
         except Exception as exc:
+            log_runtime_error("Feed invoice processing", exc)
+            record["document"] = normalize_document({
+                "confidence": 0.0,
+                "machine_issues": [
+                    "missing_supplier",
+                    "missing_invoice_date",
+                    "missing_total",
+                    "missing_document_type",
+                ],
+                "model_notes": ["extraction_service_unavailable"],
+                "warnings": ["extraction_service_unavailable"],
+            })
             record["queue_status"] = "error"
             record["error"] = _document_recovery_message(stored)
-            record["technical_error"] = str(exc)
+            record["technical_error"] = "processing_failed"
 
         queue.append(record)
         _save_queue(paths["queue"], queue)
@@ -740,8 +885,9 @@ def reject_record(record_id: str) -> None:
 
 
 def _approve_record(record: dict, duplicate_resolution: str = "ask") -> dict:
+    was_first_feed = not FirstFeedState().is_complete()
     try:
-        memory_before = business_memory_data()
+        memory_before = capture_learning_snapshot().as_dict()
     except Exception:
         memory_before = None
     progress_messages = {
@@ -776,7 +922,7 @@ def _approve_record(record: dict, duplicate_resolution: str = "ask") -> dict:
             queue_status = "skipped"
         else:
             try:
-                memory_after = business_memory_data()
+                memory_after = capture_learning_snapshot().as_dict()
                 delta = (
                     _memory_delta(memory_before, memory_after)
                     if memory_before is not None
@@ -812,6 +958,8 @@ def _approve_record(record: dict, duplicate_resolution: str = "ask") -> dict:
             st.session_state["barni_latest_business_story"] = story
         st.session_state["daily_intake_completion"] = completion
         if outcome["outcome"] != "skipped":
+            if was_first_feed and FirstFeedState().is_complete():
+                st.session_state["barni_first_feed_transition_pending"] = True
             if story is not None:
                 st.session_state.setdefault("daily_intake_batch_learning", []).append(story)
             document = record.get("document") or {}
@@ -870,12 +1018,14 @@ def _render_daily_intake_console():
             }
             with st.status("Barni is reading the invoices...", expanded=True) as status:
                 _render_feed_egg("learning", small=True)
+                _render_extraction_activity()
                 st.write(f"✓ {len(uploaded)} files uploaded")
                 shown_stages: set[str] = set()
                 stage_labels = {
                     "reading": "Reading invoice",
-                    "supplier": "Understanding supplier",
-                    "products": "Learning products",
+                    "supplier": "Understanding supplier and invoice details",
+                    "products": "Understanding items and charges",
+                    "complete": "Preparing review",
                 }
 
                 def show_stage(stage: str, index: int, total: int, file_name: str) -> None:
@@ -953,8 +1103,6 @@ def _render_daily_intake_console():
             "מע״מ": document.get("vat"),
             "סה״כ": document.get("total"),
             "ביטחון": document.get("confidence", 0.0),
-            "בעיות": " | ".join(document.get("machine_issues", [])),
-            "הערות": " | ".join(document.get("model_notes", [])),
         })
 
     st.write("")
@@ -1008,7 +1156,7 @@ def _render_daily_intake_console():
     )
 
     st.write("")
-    with st.expander("Technical confidence details"):
+    with st.expander("Technical confidence details", expanded=False):
         _render_confidence_summary(record.get("document") or {})
 
     st.write("")
@@ -1017,22 +1165,16 @@ def _render_daily_intake_console():
     with left:
         st.markdown("#### תצוגה מקדימה")
         source = Path(record["stored_file"])
-        if source.exists() and source.suffix.lower() == ".pdf":
-            st.download_button(
-                "פתח / הורד PDF",
-                data=source.read_bytes(),
-                file_name=record["file_name"],
-                mime="application/pdf",
-            )
-        elif source.exists():
-            st.image(str(source), width="stretch")
+        render_original_source(
+            source,
+            file_name=record.get("file_name") or source.name,
+            key_prefix=f"legacy_review_{record.get('id')}",
+        )
 
         if record.get("error"):
             with st.container(key="feed_error"):
                 st.markdown("**Barni could not read this invoice.**")
-                st.caption("Review the file or remove it from the queue.")
-            with st.expander("Technical details"):
-                st.code(record["error"])
+                st.caption("Check the highlighted details beside the original invoice.")
 
     with right:
         st.markdown("#### Edit invoice")
@@ -1043,6 +1185,7 @@ def _render_daily_intake_console():
         )
 
         if saved:
+            updated_document = _saveable_review_document(updated_document)
             record["document"] = updated_document
             queue = _load_queue(paths["queue"])
             for item in queue:
@@ -1129,13 +1272,12 @@ def _reset_feed_flow() -> None:
         "daily_intake_duplicate",
         "daily_intake_duplicates_found",
         "daily_intake_flow",
-        "daily_intake_hatch_batch_token",
-        "daily_intake_hatch_consumed_token",
         "daily_intake_notice",
         "daily_intake_last_search",
         "daily_intake_review_ids",
         "daily_intake_skipped",
         "daily_intake_upload",
+        "daily_intake_show_uploader",
     ):
         st.session_state.pop(key, None)
 
@@ -1149,7 +1291,7 @@ def _begin_review(record_ids: list[str]) -> None:
     st.session_state["daily_intake_batch_total"] = len(ordered)
     st.session_state.setdefault(
         "daily_intake_batch_memory_before",
-        business_memory_data(),
+        capture_learning_snapshot().as_dict(),
     )
     st.session_state["daily_intake_flow"] = "review"
 
@@ -1298,101 +1440,162 @@ def _approve_clear_and_review_attention(records: list[dict]) -> None:
         st.session_state["daily_intake_flow"] = "done"
 
 
-def _render_upload_step() -> None:
-    selected_files = st.session_state.get("daily_intake_upload") or []
-    with st.container(key="feed_intro"):
-        _render_feed_egg("awake" if selected_files else "calm")
-        st.markdown("## Feed Barni")
-        st.caption("Every invoice makes Barni smarter.")
+def _uploaded_files() -> list:
+    uploaded = st.session_state.get("daily_intake_upload")
+    if not uploaded:
+        return []
+    return uploaded if isinstance(uploaded, list) else [uploaded]
 
-    paths = _paths()
-    active = _active_records()
-    if active:
-        attention = [record for record in active if _needs_review(record)]
-        with st.container(key="feed_review_header"):
-            st.markdown("### Finish what you started")
-            waiting = len(attention) or len(active)
-            st.write(
-                f"{_count_phrase(waiting, 'invoice')} still "
-                f"{'needs' if waiting == 1 else 'need'} your decision."
-            )
-            if st.button(
-                "Continue review",
-                type="primary",
-                width="stretch",
-                key="feed_continue_review",
-            ):
-                _begin_review([
-                    record["id"] for record in (attention or active)
-                ])
-                st.rerun()
-        st.caption("Continue this review now, or add another invoice below.")
 
-    st.write("")
-    st.markdown("### Since you last checked")
-    st.caption("The latest changes supported by approved invoices and Business Memory")
-    cursor = FeedJournalCursor()
-    journal_since = st.session_state.setdefault(
-        "feed_journal_since",
-        cursor.previous_visit(),
-    )
-    try:
-        journal = BusinessStoryEngine().generate_feed(
-            StoryContext(since=journal_since),
-            max_stories=5,
-        )
-    except Exception as exc:
-        log_runtime_error("Feed Barni journal", exc)
-        st.caption(
-            "I couldn't prepare the latest business story. Your invoices are safe, "
-            "and you can still feed Barni below."
-        )
-    else:
-        for index, story in enumerate(journal):
-            render_business_story(
-                story,
-                key=f"feed_journal_{index}",
-                show_evidence=True,
-            )
-        if not st.session_state.get("feed_journal_visit_recorded"):
-            try:
-                cursor.mark_visited()
-            except OSError as exc:
-                log_runtime_error("Feed Barni visit cursor", exc)
-            else:
-                st.session_state["feed_journal_visit_recorded"] = True
-
-    st.write("")
-    st.markdown("### Feed today's invoices")
+def _render_upload_controls(
+    *,
+    onboarding: bool,
+    show_first_feed_cue: bool = False,
+) -> None:
     with st.container(key="feed_upload"):
+        if show_first_feed_cue:
+            _render_first_feed_visual_cue()
         uploaded = st.file_uploader(
-            "Drop invoices here",
+            "Choose one invoice" if onboarding else "Drop invoices here",
             type=["pdf", "png", "jpg", "jpeg", "webp"],
-            accept_multiple_files=True,
+            accept_multiple_files=not onboarding,
             key="daily_intake_upload",
         )
 
-        with st.expander("Advanced settings"):
-            model = st.text_input(
-                "Processing model",
-                value="gpt-5.6",
-                key="daily_intake_model",
-            )
+        if not onboarding:
+            with st.expander("Advanced settings"):
+                model = st.text_input(
+                    "Processing model",
+                    value="gpt-5.6",
+                    key="daily_intake_model",
+                )
+        else:
+            model = "gpt-5.6"
         if uploaded and st.button(
-            "Read invoices",
+            "Read invoice" if onboarding else "Read invoices",
             type="primary",
             width="stretch",
             key="feed_read_invoices",
         ):
-            st.session_state["daily_intake_batch_memory_before"] = business_memory_data()
+            if onboarding:
+                st.session_state["daily_intake_model"] = model
+            st.session_state["daily_intake_batch_memory_before"] = (
+                capture_learning_snapshot().as_dict()
+            )
             st.session_state["daily_intake_batch_learning"] = []
             st.session_state.pop("daily_intake_last_search", None)
             st.session_state["daily_intake_flow"] = "processing"
             st.rerun()
 
 
+def _render_upload_step() -> None:
+    onboarding = bool(st.session_state.get("barni_first_feed_onboarding_active"))
+    selected_files = _uploaded_files()
+    if onboarding:
+        with st.container(key="first_feed_onboarding"):
+            with st.container(key="feed_intro"):
+                _render_feed_egg("awake" if selected_files else "calm")
+                st.markdown("## Hello. I'm Barni.")
+                st.write("Feed me one invoice so I can start learning your business.")
+
+            _render_upload_controls(
+                onboarding=True,
+                show_first_feed_cue=not selected_files,
+            )
+        return
+
+    show_uploader = onboarding or bool(selected_files) or bool(
+        st.session_state.get("daily_intake_show_uploader")
+    )
+    active = _active_records()
+    attention = [record for record in active if _needs_review(record)]
+    with primary_workspace(key="feed"):
+        if active:
+            st.markdown("### Finish what you started")
+            waiting = len(attention) or len(active)
+            st.write(
+                f"{_count_phrase(waiting, 'invoice')} still "
+                f"{'needs' if waiting == 1 else 'need'} your decision."
+            )
+            if show_uploader:
+                if st.button(
+                    "Continue review",
+                    type="primary",
+                    width="stretch",
+                    key="feed_continue_review",
+                ):
+                    _begin_review([record["id"] for record in (attention or active)])
+                    st.rerun()
+            else:
+                continue_action, feed_action = st.columns([1.15, 1], gap="small")
+                if continue_action.button(
+                    "Continue review",
+                    type="primary",
+                    width="stretch",
+                    key="feed_continue_review",
+                ):
+                    _begin_review([record["id"] for record in (attention or active)])
+                    st.rerun()
+                if feed_action.button(
+                    "Feed Barni",
+                    width="stretch",
+                    key="feed_start_upload",
+                ):
+                    st.session_state["daily_intake_show_uploader"] = True
+                    st.rerun()
+        else:
+            st.markdown("### Ready for today's invoices")
+            st.write("Add today's invoices when you're ready.")
+            if not show_uploader and st.button(
+                "Feed Barni",
+                type="primary",
+                key="feed_start_upload",
+            ):
+                st.session_state["daily_intake_show_uploader"] = True
+                st.rerun()
+
+        if show_uploader:
+            _render_upload_controls(onboarding=False)
+
+    if not onboarding:
+        st.write("")
+        st.markdown("### Since you last checked")
+        st.caption("The latest changes supported by approved invoices and Business Memory")
+        cursor = FeedJournalCursor()
+        journal_since = st.session_state.setdefault(
+            "feed_journal_since",
+            cursor.previous_visit(),
+        )
+        try:
+            journal = BusinessStoryEngine().generate_feed(
+                StoryContext(since=journal_since),
+                max_stories=5,
+            )
+        except Exception as exc:
+            log_runtime_error("Feed Barni journal", exc)
+            st.caption(
+                "I couldn't prepare the latest business story. Your invoices are safe, "
+                "and you can still feed Barni above."
+            )
+        else:
+            for index, story in enumerate(journal):
+                render_business_story(
+                    story,
+                    key=f"feed_journal_{index}",
+                    show_evidence=True,
+                )
+            if not st.session_state.get("feed_journal_visit_recorded"):
+                try:
+                    cursor.mark_visited()
+                except OSError as exc:
+                    log_runtime_error("Feed Barni visit cursor", exc)
+                else:
+                    st.session_state["feed_journal_visit_recorded"] = True
+
+
+
 def _render_processing_step() -> None:
-    uploaded = st.session_state.get("daily_intake_upload") or []
+    uploaded = _uploaded_files()
     if not uploaded:
         st.session_state["daily_intake_flow"] = "upload"
         st.rerun()
@@ -1405,13 +1608,14 @@ def _render_processing_step() -> None:
         st.caption("You can leave the details to Barni.")
 
     with st.status("Reading your invoices...", expanded=True) as status:
+        _render_extraction_activity()
         progress = st.progress(0.0, text=f"0 of {len(uploaded)} invoices complete")
         current_file = st.empty()
         stage_labels = {
-            "reading": "Reading invoices",
-            "supplier": "Recognizing suppliers",
-            "products": "Learning products",
-            "complete": "Invoice ready",
+            "reading": "Reading invoice",
+            "supplier": "Understanding supplier and invoice details",
+            "products": "Understanding items and charges",
+            "complete": "Preparing review",
         }
 
         def show_stage(stage: str, index: int, total: int, file_name: str) -> None:
@@ -1445,31 +1649,6 @@ def _render_processing_step() -> None:
     st.session_state["daily_intake_skipped"] = 0
     st.session_state["daily_intake_duplicates_found"] = 0
     batch_records = _active_records(batch_ids)
-    summary = _processing_summary(batch_records)
-    batch_token = "|".join(batch_ids)
-    st.session_state["daily_intake_hatch_batch_token"] = batch_token
-    st.session_state.pop("daily_intake_hatch_consumed_token", None)
-    st.session_state["daily_intake_flow"] = (
-        "hatch"
-        if summary["processed"] and not _batch_is_duplicate_only(batch_records)
-        else "result"
-    )
-    st.rerun()
-
-
-def _render_hatch_step() -> None:
-    batch_token = st.session_state.get("daily_intake_hatch_batch_token")
-    if (
-        not batch_token
-        or st.session_state.get("daily_intake_hatch_consumed_token") == batch_token
-    ):
-        st.session_state["daily_intake_flow"] = "result"
-        st.rerun()
-
-    # Consume before rendering so browser refreshes cannot replay this batch.
-    st.session_state["daily_intake_hatch_consumed_token"] = batch_token
-    _render_hatch_moment()
-    time.sleep(2.35)
     st.session_state["daily_intake_flow"] = "result"
     st.rerun()
 
@@ -1506,19 +1685,11 @@ def _render_preview(record: dict) -> None:
     source = Path(record.get("stored_file") or "")
     with st.container(key="feed_review_panel"):
         st.markdown("#### Original invoice")
-        if source.exists() and source.suffix.lower() == ".pdf":
-            st.download_button(
-                "Open invoice PDF",
-                data=source.read_bytes(),
-                file_name=record.get("file_name") or source.name,
-                mime="application/pdf",
-                width="stretch",
-            )
-            st.caption("Open the PDF beside Barni to compare the extracted details.")
-        elif source.exists():
-            st.image(str(source), width="stretch")
-        else:
-            st.caption("The original file is unavailable, but the extracted details remain.")
+        render_original_source(
+            source,
+            file_name=record.get("file_name") or source.name,
+            key_prefix=f"feed_review_{record.get('id')}",
+        )
 
 
 def _render_duplicate_decision(record: dict, duplicate_state: dict) -> None:
@@ -1596,9 +1767,10 @@ def _render_review_step() -> None:
             think_about_invoice(review_document, review_document.get("items") or []),
             key_prefix=f"feed_review_{record_id}",
             on_open_evidence=_open_evidence_invoice,
+            compact=True,
         )
 
-    left, right = st.columns([0.9, 1.25], gap="large")
+    left, right = st.columns([0.9, 1.25], gap="medium")
     with left:
         _render_preview(record)
     with right:
@@ -1608,6 +1780,7 @@ def _render_review_step() -> None:
             compact=True,
         )
         if saved:
+            updated_document = _saveable_review_document(updated_document)
             queue = _load_queue(_paths()["queue"])
             for item in queue:
                 if item["id"] == record_id:
@@ -1617,9 +1790,6 @@ def _render_review_step() -> None:
             _save_queue(_paths()["queue"], queue)
             st.session_state["daily_intake_notice"] = "Changes saved."
             st.rerun()
-
-    with st.expander("Technical confidence details"):
-        _render_confidence_summary(record.get("document") or {})
 
     duplicate_state = st.session_state.get("daily_intake_duplicate")
     if duplicate_state and duplicate_state.get("record_id") == record_id:
@@ -1662,7 +1832,10 @@ def _render_review_step() -> None:
         _finish_current_review(record_id)
         st.rerun()
 
-    with st.expander("More actions"):
+    with st.expander("Technical confidence details", expanded=False):
+        _render_confidence_summary(record.get("document") or {})
+
+    with st.expander("More actions", expanded=False):
         st.caption("Reject removes this invoice from the active review flow.")
         if st.button("Reject invoice", key=f"feed_reject_{record_id}"):
             reject_record(record_id)
@@ -1672,23 +1845,43 @@ def _render_review_step() -> None:
 
 def _render_done_step() -> None:
     before = st.session_state.get("daily_intake_batch_memory_before")
-    delta = _memory_delta(before, business_memory_data()) if before else None
+    delta = (
+        _memory_delta(before, capture_learning_snapshot().as_dict())
+        if before else None
+    )
     skipped = int(st.session_state.get("daily_intake_skipped") or 0)
     duplicates = int(st.session_state.get("daily_intake_duplicates_found") or 0)
+    onboarding = bool(st.session_state.get("barni_first_feed_onboarding_active"))
+    first_feed_complete = FirstFeedState().is_complete()
+
+    if onboarding and not first_feed_complete:
+        with st.container(key="feed_done"):
+            st.markdown("## Your invoice is still waiting.")
+            st.write(
+                "I saved it so we can fix it together. Nothing entered Business Memory."
+            )
+        if st.button("Try another invoice", type="primary", width="stretch"):
+            _reset_feed_flow()
+            st.rerun()
+        return
+
     with st.container(key="feed_done"):
-        st.markdown("## All done.")
-        st.write("Everything that needed attention has been reviewed.")
         if delta and any(delta.values()):
-            if delta["invoices"]:
-                st.write(f"✓ {_count_phrase(delta['invoices'], 'invoice')} learned")
-            if delta["suppliers"]:
-                st.write(f"✓ {_count_phrase(delta['suppliers'], 'supplier')} learned")
-            if delta["products"]:
-                st.write(f"✓ {_count_phrase(delta['products'], 'product')} learned")
-            if delta["price_points"]:
-                st.write(f"✓ {_count_phrase(delta['price_points'], 'price point')} added")
-        else:
-            st.write("Business Memory is up to date.")
+            _render_feed_egg("learned", small=True)
+        st.markdown("## Barni learned" if onboarding else "## All done.")
+        if not onboarding:
+            st.write("Everything that needed attention has been reviewed.")
+
+        visible_rows = visible_learning_rows(delta or {})
+        for count, label in visible_rows:
+            st.write(f"+{count} {label}")
+        if not visible_rows and delta and delta.get("invoices"):
+            st.write("I remembered this purchase.")
+        elif not delta or not any(delta.values()):
+            st.write("This strengthened what I already know.")
+
+        if not onboarding:
+            st.caption("Business Memory updated successfully.")
         if skipped:
             st.caption(f"{_count_phrase(skipped, 'invoice')} left for later review.")
         if duplicates:
@@ -1725,14 +1918,18 @@ def _render_done_step() -> None:
 
 def render_daily_intake():
     _render_feed_styles()
+    if not st.session_state.get("barni_first_feed_onboarding_active"):
+        render_page_header(
+            "Feed Barni",
+            "Teach Barni what happened in your business.",
+            key="feed",
+        )
     recovery = st.session_state.pop("daily_intake_recovery", None)
     if recovery:
         st.error(recovery)
     flow = st.session_state.get("daily_intake_flow", "upload")
     if flow == "processing":
         _render_processing_step()
-    elif flow == "hatch":
-        _render_hatch_step()
     elif flow == "result":
         _render_result_step()
     elif flow == "review":
@@ -1741,3 +1938,33 @@ def render_daily_intake():
         _render_done_step()
     else:
         _render_upload_step()
+
+
+def render_first_feed_onboarding() -> None:
+    """Render the one-time First Feed using the production Feed workflow."""
+    st.session_state["barni_first_feed_onboarding_active"] = True
+    render_daily_intake()
+
+
+def consume_first_feed_transition() -> dict:
+    """Consume onboarding state without rendering into the current page tree."""
+    completion = dict(st.session_state.get("daily_intake_completion") or {})
+    st.session_state.pop("barni_first_feed_transition_pending", None)
+    st.session_state.pop("barni_first_feed_onboarding_active", None)
+    _reset_feed_flow()
+    st.session_state.pop("daily_intake_completion", None)
+    return completion
+
+
+def render_first_feed_transition(completion: dict) -> None:
+    """Render the one-shot first-learning acknowledgement on Home only."""
+    _render_feed_styles()
+    with st.container(key="feed_completion"):
+        _render_feed_egg("learned", small=True)
+        st.markdown("### Barni learned")
+        rows = visible_learning_rows(completion)
+        for count, label in rows:
+            st.write(f"+{count} {label}")
+        if not rows:
+            st.write("I remembered this purchase.")
+        st.caption("I know something about your business now.")

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 import streamlit as st
 
 
@@ -75,7 +78,42 @@ def render_global_styles() -> None:
             padding: 1rem 1.15rem;
             color: var(--barni-muted);
         }
+        [class*="st-key-barni_page_header_"] {
+            max-width: 760px;
+            margin-bottom: 0.9rem;
+        }
+        [class*="st-key-barni_page_header_"] h2 {
+            margin: 0 0 0.15rem;
+        }
+        [class*="st-key-barni_page_header_"] [data-testid="stCaptionContainer"] {
+            font-size: 0.92rem;
+        }
+        [class*="st-key-barni_primary_workspace_"] {
+            background: var(--barni-beige);
+            border: 1px solid var(--barni-border);
+            border-radius: 20px;
+            padding: 1.15rem 1.3rem;
+            margin-bottom: 1.05rem;
+            box-shadow: 0 7px 24px rgba(36, 54, 43, 0.045);
+        }
+        [class*="st-key-barni_primary_workspace_"] h3 {
+            margin-top: 0;
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_page_header(title: str, supporting_text: str, *, key: str) -> None:
+    """Render the shared title and one-sentence page introduction."""
+    with st.container(key=f"barni_page_header_{key}"):
+        st.markdown(f"## {title}")
+        st.caption(supporting_text)
+
+
+@contextmanager
+def primary_workspace(*, key: str) -> Iterator[None]:
+    """Group a page's primary state and actions into one visual surface."""
+    with st.container(key=f"barni_primary_workspace_{key}"):
+        yield
