@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import base64
+import importlib.util
 import json
 import os
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Mapping
 
@@ -25,6 +27,30 @@ DocumentType = Literal[
     "אחר",
 ]
 
+REQUIRED_EXTRACTION_COMMANDS = ("pdftotext", "pdftoppm", "tesseract")
+REQUIRED_OCR_LANGUAGES = ("eng", "heb")
+REQUIRED_EXTRACTION_MODULES = ("openai", "pydantic", "PIL")
+
+
+@dataclass(frozen=True)
+class ExtractionCapabilityReport:
+    """Presence-only deployment diagnostics; never contains credential values."""
+
+    credential_configured: bool
+    available_commands: tuple[str, ...]
+    available_ocr_languages: tuple[str, ...]
+    available_python_modules: tuple[str, ...]
+    missing: tuple[str, ...]
+
+    @property
+    def ready(self) -> bool:
+        return not self.missing
+
+    def internal_summary(self) -> str:
+        if self.ready:
+            return "Extraction runtime READY"
+        return "Extraction runtime NOT READY; missing: " + ", ".join(self.missing)
+
 
 def extraction_service_ready(
     environment: Mapping[str, str] | None = None,
@@ -32,6 +58,72 @@ def extraction_service_ready(
     """Return credential availability without reading or exposing its value."""
     source = os.environ if environment is None else environment
     return bool(str(source.get("OPENAI_API_KEY", "")).strip())
+
+
+def _available_tesseract_languages(command: str | None) -> set[str]:
+    if not command:
+        return set()
+    try:
+        result = subprocess.run(
+            [command, "--list-langs"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    if result.returncode != 0:
+        return set()
+    return {
+        value.strip()
+        for value in result.stdout.splitlines()
+        if value.strip() and not value.lower().startswith("list of available")
+    }
+
+
+def extraction_capability_report(
+    environment: Mapping[str, str] | None = None,
+) -> ExtractionCapabilityReport:
+    """Check extraction deployment capabilities without making an AI request."""
+    command_paths = {
+        name: shutil.which(name)
+        for name in REQUIRED_EXTRACTION_COMMANDS
+    }
+    available_commands = tuple(
+        name for name, path in command_paths.items() if path
+    )
+    ocr_languages = _available_tesseract_languages(command_paths.get("tesseract"))
+    available_modules = tuple(
+        name
+        for name in REQUIRED_EXTRACTION_MODULES
+        if importlib.util.find_spec(name) is not None
+    )
+
+    missing: list[str] = []
+    if not extraction_service_ready(environment):
+        missing.append("credential:OPENAI_API_KEY")
+    missing.extend(
+        f"command:{name}"
+        for name in REQUIRED_EXTRACTION_COMMANDS
+        if name not in available_commands
+    )
+    missing.extend(
+        f"ocr-language:{name}"
+        for name in REQUIRED_OCR_LANGUAGES
+        if name not in ocr_languages
+    )
+    missing.extend(
+        f"python-module:{name}"
+        for name in REQUIRED_EXTRACTION_MODULES
+        if name not in available_modules
+    )
+    return ExtractionCapabilityReport(
+        credential_configured=extraction_service_ready(environment),
+        available_commands=available_commands,
+        available_ocr_languages=tuple(sorted(ocr_languages)),
+        available_python_modules=available_modules,
+        missing=tuple(missing),
+    )
 
 
 class InvoiceItem(BaseModel):
@@ -175,7 +267,10 @@ def build_input(path: Path, max_pages: int = 6) -> tuple[list[dict], str]:
     suffix = path.suffix.lower()
 
     if suffix == ".pdf":
-        native_text = extract_native_pdf_text(path)
+        try:
+            native_text = extract_native_pdf_text(path)
+        except (FileNotFoundError, RuntimeError, subprocess.TimeoutExpired):
+            native_text = ""
         if len("".join(native_text.split())) >= 80:
             content = [{
                 "type": "input_text",
@@ -187,6 +282,8 @@ def build_input(path: Path, max_pages: int = 6) -> tuple[list[dict], str]:
             return content, "ai_pdf_text"
 
         images = pdf_to_images(path, max_pages=max_pages)
+        if not images:
+            raise RuntimeError("No readable PDF pages were produced.")
         content = [{
             "type": "input_text",
             "text": "Extract this scanned PDF from the page images.",

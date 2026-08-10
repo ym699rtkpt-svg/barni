@@ -7,6 +7,7 @@ from ui.accountant_workspace import render_accountant_workspace
 from ui.design_system import render_global_styles
 from ui.recipes import render_recipes
 import sqlite3
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
@@ -36,7 +37,7 @@ from enhanced_dashboard import render_enhanced_dashboard
 from ai_accountant import render_ai_accountant
 from services.pilot_support import APP_VERSION, log_runtime_error
 from services.document_text import extract_document_text
-from ai_extractor import extraction_service_ready
+from ai_extractor import extraction_capability_report
 from services.visible_learning import first_feed_onboarding_required
 
 APP_DIR = Path(__file__).resolve().parent
@@ -44,6 +45,7 @@ DATA_DIR = APP_DIR / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
 PREVIEW_DIR = DATA_DIR / "previews"
 DB_PATH = DATA_DIR / "invoices.db"
+EXTRACTION_LOGGER = logging.getLogger("barni.extraction")
 
 for folder in (DATA_DIR, UPLOAD_DIR, PREVIEW_DIR):
     folder.mkdir(parents=True, exist_ok=True)
@@ -178,28 +180,37 @@ render_global_styles()
 
 
 def render_extraction_preflight() -> None:
-    if extraction_service_ready():
+    report = extraction_capability_report()
+    if report.ready:
         if not st.session_state.get("extraction_preflight_ready_shown"):
             st.toast("🟢 Extraction Service Ready")
             st.session_state["extraction_preflight_ready_shown"] = True
         return
 
-    st.error("🔴 Extraction Service Not Configured")
-    st.markdown("## Barni needs one local setting before it can read invoices.")
-    st.write(
-        "Configure `OPENAI_API_KEY` in the same terminal, IDE, or process "
-        "environment that starts Streamlit. Then stop and restart Barni."
-    )
+    if not st.session_state.get("extraction_preflight_failure_logged"):
+        EXTRACTION_LOGGER.error(report.internal_summary())
+        log_runtime_error(
+            "Extraction preflight",
+            RuntimeError(report.internal_summary()),
+        )
+        st.session_state["extraction_preflight_failure_logged"] = True
+
+    if not report.credential_configured:
+        st.error("🔴 Extraction Service Not Configured")
+        st.markdown("## Barni needs one secure setting before it can read invoices.")
+        st.write(
+            "Ask the operator to configure `OPENAI_API_KEY` as a root-level "
+            "Streamlit secret or process environment variable, then reboot Barni."
+        )
+    else:
+        st.error("🔴 Extraction Service Not Ready")
+        st.markdown("## Barni cannot read invoices on this deployment yet.")
+        st.write(
+            "The operator needs to finish the document-reading setup and reboot Barni."
+        )
     st.caption(
-        "The credential value is never displayed. Adding it after Barni has "
-        "already started will not update the running process."
-    )
-    st.code(
-        'read -s "OPENAI_API_KEY?OpenAI API key: "\n'
-        "export OPENAI_API_KEY\n"
-        "printf '\\n'\n"
-        ".venv/bin/streamlit run app.py",
-        language="bash",
+        "No invoice was uploaded and no business knowledge changed. Technical "
+        "details are available only in the deployment logs."
     )
     st.stop()
 

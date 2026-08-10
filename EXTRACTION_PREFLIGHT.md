@@ -8,11 +8,13 @@ The preflight changes startup availability only. It does not change OCR, extract
 
 ## What is checked
 
-The shared extraction preflight checks only whether the running process contains a non-empty environment variable named:
+The shared extraction preflight checks the complete no-cost runtime contract:
 
-```text
-OPENAI_API_KEY
-```
+- a non-empty root-level `OPENAI_API_KEY` environment value;
+- Poppler commands `pdftotext` and `pdftoppm`;
+- the `tesseract` command;
+- English and Hebrew OCR languages (`eng` and `heb`);
+- the Python modules used by extraction (`openai`, `pydantic`, and `PIL`).
 
 It does not:
 
@@ -23,7 +25,10 @@ It does not:
 - write it to a file or database;
 - reveal any part of its value.
 
-The startup preflight and production extractor use the same check, preventing them from disagreeing about whether configuration is present.
+The check makes no paid AI request. Internal diagnostics contain only missing
+capability names, never credential values or invoice content. On Streamlit
+Community Cloud, `packages.txt` supplies the required Linux commands and OCR
+languages.
 
 ## When it is checked
 
@@ -47,23 +52,28 @@ Barni shows:
 
 The confirmation appears unobtrusively once, and the existing landing page and application continue normally.
 
-### Not configured
+### Not configured or runtime not ready
 
 Barni shows:
 
 > 🔴 Extraction Service Not Configured
 
-The application stops before the landing page and upload workflow. The screen explains that `OPENAI_API_KEY` must be configured in the same terminal, IDE, or process environment used to start Streamlit, and that Barni must then be restarted.
+The application stops before the landing page and upload workflow. Missing
+credentials produce `Extraction Service Not Configured`. Missing document-reader
+capabilities produce `Extraction Service Not Ready`. Customer copy remains calm;
+the exact missing capability names are written only to internal deployment logs.
 
 No business data is changed while startup is blocked.
 
 ## Expected operator action
 
 1. Stop the unconfigured Streamlit process.
-2. Configure the credential through the local terminal, IDE launch configuration, process manager, or secure secret manager.
-3. Do not put the value in source code, Git, documentation, demo data, or visible terminal output.
-4. Start Streamlit again from the configured environment.
-5. Confirm the application reports `🟢 Extraction Service Ready`.
+2. Configure the credential through the local terminal, IDE launch configuration,
+   process manager, or a root-level Streamlit Community Cloud secret.
+3. Ensure the deployment installed every package declared in root `packages.txt`.
+4. Do not put the value in source code, Git, documentation, demo data, or visible terminal output.
+5. Reboot or redeploy Streamlit from the configured environment.
+6. Confirm the application reports `🟢 Extraction Service Ready`.
 
 For an interactive zsh session, the preflight screen provides this value-hidden setup pattern:
 
@@ -99,5 +109,8 @@ Focused automated tests cover:
 - present credential → ready;
 - missing credential → not configured;
 - blank credential → not configured.
+- missing binaries, OCR languages, and Python modules → not ready;
+- embedded-text PDF, scanned-PDF image, and uploaded-image AI inputs remain non-empty;
+- the preflight makes no AI request and never includes a credential value in diagnostics.
 
 Runtime verification should exercise both startup states without exposing a real credential value. A non-secret placeholder is sufficient to verify that the READY branch renders; it does not validate external API connectivity or replace the five-invoice live extraction acceptance gate.
