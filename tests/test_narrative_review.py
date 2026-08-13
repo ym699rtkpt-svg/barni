@@ -52,7 +52,7 @@ class NarrativeReviewTests(unittest.TestCase):
             search_detail,
         )
         self.assertIn(
-            'st.expander("Technical confidence details", expanded=False)',
+            'st.expander("Why Barni thinks this", expanded=False)',
             review_detail,
         )
         self.assertLess(

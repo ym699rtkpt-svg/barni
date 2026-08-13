@@ -19,7 +19,11 @@ from hybrid_engine import (
     validate_document,
 )
 from knowledge_engine.line_classifier import is_product_line
-from review_form import approve_to_database_detailed, document_review_form
+from review_form import (
+    approve_to_database_detailed,
+    document_review_form,
+    review_attention_fields,
+)
 from services.barni_thinking import think_about_invoice
 from services.business_memory import business_memory_data
 from services.business_stories import BusinessStoryEngine, StoryContext
@@ -679,6 +683,19 @@ def _review_reason(record: dict) -> str:
     return "Review the extracted invoice details"
 
 
+def _render_review_state(record: dict) -> None:
+    """Lead Review with the decision and its concrete field-level work."""
+    attention = review_attention_fields(record)
+    if not attention:
+        st.markdown("## Everything looks good")
+        return
+
+    count = len(attention)
+    st.markdown(f"## I found {count} {'thing' if count == 1 else 'things'} to check")
+    for item in attention:
+        st.markdown(f"- **{item.label}** — {item.status}")
+
+
 def _needs_review(record: dict) -> bool:
     return record.get("queue_status") in {"review", "error"}
 
@@ -954,18 +971,28 @@ def _approve_record(record: dict, duplicate_resolution: str = "ask") -> dict:
                     approval_outcome=outcome.get("outcome", ""),
                     memory_delta=learning_delta,
                 ),
-                max_stories=1,
+                max_stories=3,
             )
         except Exception:
             stories = []
-        story = stories[0] if stories else None
+        story = next(
+            (
+                candidate for candidate in stories
+                if candidate.story_type != "identity_review_needed"
+            ),
+            None,
+        )
         if story is not None:
             completion["story"] = story
             st.session_state["barni_latest_business_story"] = story
         st.session_state["daily_intake_completion"] = completion
         if outcome["outcome"] != "skipped":
+            st.session_state["daily_intake_approval_complete"] = {
+                "record_id": record["id"],
+                "invoice_id": outcome.get("invoice_id"),
+            }
             if was_first_feed and FirstFeedState().is_complete():
-                st.session_state["barni_first_feed_transition_pending"] = True
+                st.session_state.current_page = "קליטה יומית"
             if story is not None:
                 st.session_state.setdefault("daily_intake_batch_learning", []).append(story)
             document = record.get("document") or {}
@@ -1239,7 +1266,7 @@ def _render_daily_intake_console():
     else:
         action1, action2 = st.columns(2, gap="medium")
         if action1.button(
-            "Approve and teach Barni",
+            "Approve invoice",
             type="primary",
             width="stretch",
         ):
@@ -1275,6 +1302,7 @@ def _reset_feed_flow() -> None:
         "daily_intake_batch_total",
         "daily_intake_batch_memory_before",
         "daily_intake_batch_learning",
+        "daily_intake_approval_complete",
         "daily_intake_duplicate",
         "daily_intake_duplicates_found",
         "daily_intake_flow",
@@ -1291,6 +1319,7 @@ def _reset_feed_flow() -> None:
 def _begin_review(record_ids: list[str]) -> None:
     records = _active_records(record_ids)
     ordered = sorted(records, key=_queue_priority)
+    st.session_state.pop("daily_intake_approval_complete", None)
     st.session_state["daily_intake_review_ids"] = [
         record["id"] for record in ordered
     ]
@@ -1312,6 +1341,48 @@ def _finish_current_review(record_id: str, message: str | None = None) -> None:
         st.session_state["daily_intake_notice"] = message
     if not st.session_state["daily_intake_review_ids"]:
         st.session_state["daily_intake_flow"] = "done"
+
+
+def _return_home_after_approval() -> None:
+    st.session_state.pop("barni_first_feed_onboarding_active", None)
+    st.session_state.pop("daily_intake_completion", None)
+    _reset_feed_flow()
+    st.session_state.current_page = "Barni"
+
+
+def _continue_after_approval() -> None:
+    st.session_state.pop("daily_intake_approval_complete", None)
+
+
+def _render_approval_complete(*, has_next: bool) -> None:
+    """Render a terminal approval acknowledgement without a teaching prompt."""
+    with st.container(key="feed_approval_complete"):
+        _render_feed_egg("learned", small=True)
+        st.markdown("## Barni learned this invoice.")
+        st.caption("The invoice is approved and stored in Business Memory.")
+
+    if has_next:
+        next_col, home_col = st.columns([1.2, 1], gap="medium")
+        if next_col.button(
+            "Continue to next invoice",
+            type="primary",
+            width="stretch",
+            on_click=_continue_after_approval,
+        ):
+            st.rerun()
+        if home_col.button(
+            "Return to Home",
+            width="stretch",
+            on_click=_return_home_after_approval,
+        ):
+            st.rerun()
+    elif st.button(
+        "Return to Home",
+        type="primary",
+        width="stretch",
+        on_click=_return_home_after_approval,
+    ):
+        st.rerun()
 
 
 def _human_confidence(record: dict) -> tuple[str, bool]:
@@ -1682,7 +1753,7 @@ def _render_result_step() -> None:
         if st.button(label, type="primary", width="stretch"):
             _approve_clear_and_review_attention(records)
             st.rerun()
-    elif st.button("Approve & Teach Barni", type="primary", width="stretch"):
+    elif st.button("Approve invoice", type="primary", width="stretch"):
         _approve_ready_batch(records)
         st.rerun()
 
@@ -1713,12 +1784,12 @@ def _render_duplicate_decision(record: dict, duplicate_state: dict) -> None:
         if replace_col.button("Replace", type="primary", width="stretch"):
             result = _approve_record(record, "replace")
             if result["success"]:
-                _finish_current_review(record["id"], "Barni remembers it.")
+                _finish_current_review(record["id"])
                 st.rerun()
         if keep_col.button("Keep both", width="stretch"):
             result = _approve_record(record, "keep_both")
             if result["success"]:
-                _finish_current_review(record["id"], "Barni remembers it.")
+                _finish_current_review(record["id"])
                 st.rerun()
         if st.button("Skip duplicate", key="feed_skip_duplicate"):
             result = _approve_record(record, "skip")
@@ -1733,6 +1804,10 @@ def _render_review_step() -> None:
     if not records:
         st.session_state["daily_intake_flow"] = "done"
         st.rerun()
+
+    if st.session_state.get("daily_intake_approval_complete"):
+        _render_approval_complete(has_next=True)
+        return
 
     record = records[0]
     record_id = record["id"]
@@ -1762,19 +1837,7 @@ def _render_review_step() -> None:
 
     with st.container(key="feed_review_header"):
         st.caption(f"Invoice {position} of {total}")
-        st.markdown(
-            f"### {(record.get('document') or {}).get('supplier') or 'Review this invoice'}"
-        )
-        review_document = {
-            **(record.get("document") or {}),
-            "source_record_id": record_id,
-        }
-        render_barni_thinking(
-            think_about_invoice(review_document, review_document.get("items") or []),
-            key_prefix=f"feed_review_{record_id}",
-            on_open_evidence=_open_evidence_invoice,
-            compact=True,
-        )
+        _render_review_state(record)
 
     left, right = st.columns([0.9, 1.25], gap="medium")
     with left:
@@ -1812,7 +1875,7 @@ def _render_review_step() -> None:
 
     approve_col, skip_col = st.columns([1.4, 1], gap="medium")
     if approve_col.button(
-        "Approve & Teach Barni",
+        "Approve invoice",
         type="primary",
         width="stretch",
         key=f"feed_approve_{record_id}",
@@ -1828,7 +1891,7 @@ def _render_review_step() -> None:
                 "existing": result["existing"],
             }
         elif result["success"]:
-            _finish_current_review(record_id, "Barni remembers it.")
+            _finish_current_review(record_id)
         st.rerun()
 
     if skip_col.button("Skip for now", width="stretch", key=f"feed_skip_{record_id}"):
@@ -1838,7 +1901,17 @@ def _render_review_step() -> None:
         _finish_current_review(record_id)
         st.rerun()
 
-    with st.expander("Technical confidence details", expanded=False):
+    with st.expander("Why Barni thinks this", expanded=False):
+        review_document = {
+            **(record.get("document") or {}),
+            "source_record_id": record_id,
+        }
+        render_barni_thinking(
+            think_about_invoice(review_document, review_document.get("items") or []),
+            key_prefix=f"feed_review_{record_id}",
+            on_open_evidence=_open_evidence_invoice,
+            compact=True,
+        )
         _render_confidence_summary(record.get("document") or {})
 
     with st.expander("More actions", expanded=False):
@@ -1869,6 +1942,10 @@ def _render_done_step() -> None:
         if st.button("Try another invoice", type="primary", width="stretch"):
             _reset_feed_flow()
             st.rerun()
+        return
+
+    if st.session_state.get("daily_intake_approval_complete"):
+        _render_approval_complete(has_next=False)
         return
 
     with st.container(key="feed_done"):

@@ -157,10 +157,70 @@ class IdentityReviewService:
         invoice_ids: Sequence[int], priority: int,
     ) -> None:
         """Accept an unresolved Business Fact without resolving it in this service."""
-        detail = "|".join(str(value) for value in sorted(set(invoice_ids)))
-        key = _candidate_key(f"fact_{review_type}", canonical_id, canonical_id, detail)
+        stored_review_type = f"fact_{review_type}"
+        key = _candidate_key(stored_review_type, canonical_id, canonical_id)
         now = self._now()
         with self._connect() as connection:
+            equivalent = connection.execute(
+                """SELECT id, status, evidence_json
+                   FROM identity_review_candidates
+                   WHERE review_type = ? AND entity_type = ?
+                     AND source_canonical_id = ? AND target_canonical_id = ?
+                   ORDER BY CASE status
+                       WHEN 'confirmed' THEN 0 WHEN 'rejected' THEN 0
+                       WHEN 'pending' THEN 1 ELSE 2 END, id""",
+                (stored_review_type, entity_type, canonical_id, canonical_id),
+            ).fetchall()
+            if any(row["status"] in {"confirmed", "rejected"} for row in equivalent):
+                regenerated_ids = [
+                    row["id"] for row in equivalent if row["status"] == "pending"
+                ]
+                if regenerated_ids:
+                    placeholders = ",".join("?" for _ in regenerated_ids)
+                    connection.execute(
+                        f"""UPDATE identity_review_candidates
+                            SET status = 'superseded', updated_at = ?
+                            WHERE id IN ({placeholders})""",
+                        [now, *regenerated_ids],
+                    )
+                    connection.commit()
+                return
+
+            pending = [row for row in equivalent if row["status"] == "pending"]
+            if pending:
+                primary = pending[0]
+                try:
+                    previous = json.loads(primary["evidence_json"] or "{}")
+                except json.JSONDecodeError:
+                    previous = {}
+                combined_invoice_ids = list(dict.fromkeys([
+                    *(int(value) for value in previous.get("invoice_ids", ()) if value),
+                    *(int(value) for value in invoice_ids if value),
+                ]))
+                connection.execute(
+                    """UPDATE identity_review_candidates
+                       SET title = ?, explanation = ?, priority = ?, reasons_json = ?,
+                           evidence_json = ?, updated_at = ?
+                       WHERE id = ?""",
+                    (
+                        title, explanation, priority,
+                        json.dumps(list(reasons), ensure_ascii=False),
+                        json.dumps({"invoice_ids": combined_invoice_ids}, ensure_ascii=False),
+                        now, primary["id"],
+                    ),
+                )
+                if len(pending) > 1:
+                    duplicate_ids = [row["id"] for row in pending[1:]]
+                    placeholders = ",".join("?" for _ in duplicate_ids)
+                    connection.execute(
+                        f"""UPDATE identity_review_candidates
+                            SET status = 'superseded', updated_at = ?
+                            WHERE id IN ({placeholders})""",
+                        [now, *duplicate_ids],
+                    )
+                connection.commit()
+                return
+
             connection.execute(
                 """INSERT INTO identity_review_candidates(
                        candidate_key, entity_type, review_type, source_canonical_id,
@@ -173,7 +233,7 @@ class IdentityReviewService:
                        evidence_json = excluded.evidence_json, updated_at = excluded.updated_at
                    WHERE identity_review_candidates.status = 'pending'""",
                 (
-                    key, entity_type, f"fact_{review_type}", canonical_id, canonical_id,
+                    key, entity_type, stored_review_type, canonical_id, canonical_id,
                     title, explanation, priority,
                     json.dumps(list(reasons), ensure_ascii=False),
                     json.dumps({"invoice_ids": list(dict.fromkeys(invoice_ids))}, ensure_ascii=False),

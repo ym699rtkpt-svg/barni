@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Callable
 
 import pandas as pd
@@ -28,6 +29,68 @@ DOCUMENT_TYPES = [
 ]
 
 
+@dataclass(frozen=True)
+class ReviewAttention:
+    field: str
+    label: str
+    status: str
+
+
+_REVIEW_FIELDS = (
+    ("supplier", "Supplier"),
+    ("supplier_id", "Supplier ID"),
+    ("invoice_number", "Invoice number"),
+    ("invoice_date", "Invoice date"),
+    ("document_type", "Document type"),
+    ("statement_month", "Statement month"),
+    ("total", "Total"),
+    ("subtotal", "Subtotal"),
+    ("taxable_amount", "Taxable amount"),
+    ("exempt_amount", "Exempt amount"),
+    ("vat_rate", "VAT rate"),
+    ("vat", "VAT"),
+    ("items", "Items & charges"),
+)
+
+
+def review_attention_fields(record: dict) -> tuple[ReviewAttention, ...]:
+    """Return the customer-facing fields that require a review decision."""
+    document = record.get("document") or {}
+    issues = set(document.get("machine_issues") or ())
+    attention: list[ReviewAttention] = []
+
+    for field, label in _REVIEW_FIELDS:
+        if not _field_needs_review(issues, field):
+            continue
+        status = "Missing" if f"missing_{field}" in issues else "Please check"
+        attention.append(ReviewAttention(field, label, status))
+
+    notes = {str(value or "").strip() for value in document.get("model_notes") or ()}
+    if "supplier_requires_confirmation" in notes and not any(
+        item.field == "supplier" for item in attention
+    ):
+        attention.insert(0, ReviewAttention("supplier", "Supplier", "Please check"))
+
+    try:
+        confidence = float(document.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    needs_generic_check = (
+        bool(notes - {"supplier_requires_confirmation"})
+        or record.get("queue_status") == "error"
+        or (
+            record.get("queue_status") == "review"
+            and not issues
+            and not notes
+            and confidence < 0.90
+        )
+    )
+    if needs_generic_check and not any(item.field == "invoice_details" for item in attention):
+        attention.append(ReviewAttention("invoice_details", "Invoice details", "Please check"))
+
+    return tuple(attention)
+
+
 def _field_needs_review(issues: set[str], field: str) -> bool:
     if f"missing_{field}" in issues:
         return True
@@ -37,6 +100,8 @@ def _field_needs_review(issues: set[str], field: str) -> bool:
         if f"credit_note_{field}_must_be_negative" in issues:
             return True
     if field in {"vat_rate", "vat", "taxable_amount"} and "vat_rate_mismatch" in issues:
+        return True
+    if field == "vat" and "exempt_document_with_nonzero_vat" in issues:
         return True
     return field == "items" and "missing_line_items" in issues
 

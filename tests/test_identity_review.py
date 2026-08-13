@@ -76,6 +76,75 @@ class IdentityReviewTests(unittest.TestCase):
         self.reviews.refresh_queue()
         self.assertNotIn(candidate.id, [value.id for value in self.reviews.pending(20)])
 
+    def test_equivalent_fact_teaching_tasks_are_deduplicated(self):
+        product_id = self.identities.products()[0].id
+        details = {
+            "review_type": "unit_conflict",
+            "entity_type": "product",
+            "canonical_id": product_id,
+            "title": "I need help with this unit basis",
+            "explanation": "The unit basis is unclear.",
+            "reasons": ("The unit basis is unclear.",),
+            "priority": 92,
+        }
+        self.reviews.enqueue_fact_conflict(**details, invoice_ids=(1,))
+        self.reviews.enqueue_fact_conflict(**details, invoice_ids=(2, 1))
+
+        candidates = [
+            value for value in self.reviews.pending(30)
+            if value.review_type == "fact_unit_conflict"
+        ]
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual({source.invoice_id for source in candidates[0].evidence}, {1, 2})
+
+    def test_resolved_fact_teaching_task_persists_across_refreshes(self):
+        product_id = self.identities.products()[0].id
+        details = {
+            "review_type": "unit_conflict",
+            "entity_type": "product",
+            "canonical_id": product_id,
+            "title": "I need help with this unit basis",
+            "explanation": "The unit basis is unclear.",
+            "reasons": ("The unit basis is unclear.",),
+            "priority": 92,
+        }
+        self.reviews.enqueue_fact_conflict(**details, invoice_ids=(1,))
+        candidate = next(
+            value for value in self.reviews.pending(30)
+            if value.review_type == "fact_unit_conflict"
+        )
+        self.reviews.acknowledge(candidate.id)
+
+        # Simulate an equivalent task created by the previous invoice-scoped key.
+        with sqlite3.connect(self.path) as connection:
+            connection.execute(
+                """INSERT INTO identity_review_candidates(
+                       candidate_key, entity_type, review_type,
+                       source_canonical_id, target_canonical_id, title,
+                       explanation, confidence, priority, reasons_json,
+                       evidence_json, status, created_at, updated_at
+                   ) SELECT 'legacy-regenerated-unit-conflict', entity_type,
+                       review_type, source_canonical_id, target_canonical_id,
+                       title, explanation, confidence, priority, reasons_json,
+                       evidence_json, 'pending', created_at, updated_at
+                   FROM identity_review_candidates WHERE id = ?""",
+                (candidate.id,),
+            )
+            connection.commit()
+
+        for _ in range(3):
+            self.reviews.enqueue_fact_conflict(**details, invoice_ids=(1, 2))
+            self.reviews.refresh_queue()
+
+        pending_types = {value.review_type for value in self.reviews.pending(30)}
+        self.assertNotIn("fact_unit_conflict", pending_types)
+        with sqlite3.connect(self.path) as connection:
+            statuses = connection.execute(
+                """SELECT status FROM identity_review_candidates
+                   WHERE review_type = 'fact_unit_conflict' ORDER BY id""",
+            ).fetchall()
+        self.assertEqual(statuses, [("confirmed",), ("superseded",)])
+
     def test_split_and_undo_preserve_source_records(self):
         products = self.identities.products()
         merged_id = self.identities.merge_products(products[1].id, products[0].id)

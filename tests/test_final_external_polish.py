@@ -42,21 +42,21 @@ class FinalExternalPolishTests(unittest.TestCase):
         form = inspect.getsource(review_form.document_review_form)
 
         for required in (
-            "render_barni_thinking(",
+            "_render_review_state(record)",
             "_render_preview(record)",
             "document_review_form(",
-            '"Approve & Teach Barni"',
+            '"Approve invoice"',
             '"Skip for now"',
             '"More actions"',
         ):
             self.assertIn(required, review)
         self.assertIn('"Save changes"', form)
         self.assertLess(
-            review.index('"Approve & Teach Barni"'),
-            review.index('"Technical confidence details"'),
+            review.index('"Approve invoice"'),
+            review.index('"Why Barni thinks this"'),
         )
         self.assertIn(
-            'st.expander("Technical confidence details", expanded=False)',
+            'st.expander("Why Barni thinks this", expanded=False)',
             review,
         )
 
@@ -64,6 +64,7 @@ class FinalExternalPolishTests(unittest.TestCase):
         review = inspect.getsource(daily_intake._render_review_step)
         narrative = inspect.getsource(render_barni_thinking)
 
+        self.assertIn("render_barni_thinking(", review)
         self.assertIn("compact=True", review)
         self.assertIn('density = "compact" if compact else "shell"', narrative)
 
